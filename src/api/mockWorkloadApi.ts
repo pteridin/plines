@@ -109,6 +109,7 @@ export const fetchWorkload = async (
         points: clonePoints(record.points).map((point) => ({
             ...point,
             year: point.year ?? year,
+            absoluteWeek: point.absoluteWeek ?? point.week,
         })),
     }));
 };
@@ -124,6 +125,7 @@ export const updateWorkload = async (
         .map((point) => ({
             ...point,
             year,
+            absoluteWeek: point.absoluteWeek ?? point.week,
         }))
         .sort((a, b) => a.week - b.week);
 

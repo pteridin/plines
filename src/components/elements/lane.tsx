@@ -17,6 +17,16 @@ export type LanePoint = {
     year?: number;
 };
 
+type HoverInfo = {
+    ratioX: number;
+    ratioY: number;
+    isoWeek: number;
+    isoYear: number;
+    startLabel: string;
+    endLabel: string;
+    hours: number;
+};
+
 export type LaneProps = {
     description: string;
     points: LanePoint[];
@@ -29,16 +39,13 @@ export type LaneProps = {
     totalWeeks?: number;
     activeWeek?: number | null;
     year?: number;
-    weekOffset?: number;
-    baseYear?: number;
-    currentYearWeeks?: number;
-    nextYearWeeks?: number;
-    onZoomRequest?: (info: { week: number; absoluteWeek: number }) => void;
+    startValue?: number;
+    endValue?: number;
 };
 
-export const TOTAL_WEEKS = 52;
-export const VIEWBOX_WIDTH = 1000;
-export const VIEWBOX_HEIGHT = 100;
+const TOTAL_WEEKS = 52;
+const VIEWBOX_WIDTH = 1000;
+const VIEWBOX_HEIGHT = 100;
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
@@ -73,16 +80,6 @@ const getIsoWeekDateRange = (isoYear: number, isoWeek: number) => {
     };
 };
 
-type HoverInfo = {
-    ratioX: number;
-    ratioY: number;
-    isoWeek: number;
-    isoYear: number;
-    startLabel: string;
-    endLabel: string;
-    hours: number;
-};
-
 function Lane({
     description,
     points,
@@ -95,14 +92,10 @@ function Lane({
     totalWeeks = TOTAL_WEEKS,
     activeWeek = null,
     year = new Date().getFullYear(),
-    weekOffset = 0,
-    baseYear,
-    currentYearWeeks,
-    nextYearWeeks,
-    onZoomRequest,
+    startValue,
+    endValue,
 }: LaneProps) {
     const [focused, setFocused] = useState(false);
-    const lineHeight = focused ? 300 : 100;
     const weeks = Math.max(1, Math.round(totalWeeks));
     const svgRef = useRef<SVGSVGElement | null>(null);
     const pointsRef = useRef(points);
@@ -112,29 +105,60 @@ function Lane({
         | {
               type: "point";
               pointId: string;
+              pointerId: number;
               fixed?: boolean;
-              pointerId: number;
           }
-        | {
-              type: "line";
-              pointerId: number;
-              pointerStartWeek: number;
-              pointerStartHours: number;
-              segmentStartIndex: number;
-              segmentEndIndex: number;
-              originalPoints: LanePoint[];
-        }
     >(null);
 
     pointsRef.current = points;
 
-    const resolvedBaseYear = baseYear ?? year;
-    const resolvedCurrentYearWeeks = currentYearWeeks ?? Math.round(totalWeeks);
-    const resolvedNextYearWeeks = nextYearWeeks ?? 0;
+    const lineHeight = focused ? 260 : 140;
 
     const canEdit = editable && typeof onPointsChange === "function";
     const safeCapacityHours = Math.max(capacityHours, snapStepHours);
     const maxHours = Math.max((safeCapacityHours * maxLoadPercent) / 100, snapStepHours);
+
+    const sortedPoints = useMemo(
+        () =>
+            sortPoints(
+                points.map((point) => ({
+                    ...point,
+                    hours: clamp(point.hours, 0, maxHours),
+                }))
+            ),
+        [points, maxHours]
+    );
+
+    const boundaryStart = clamp(
+        startValue ?? sortedPoints[0]?.hours ?? 0,
+        0,
+        maxHours
+    );
+    const boundaryEnd = clamp(
+        endValue ?? sortedPoints[sortedPoints.length - 1]?.hours ?? boundaryStart,
+        0,
+        maxHours
+    );
+
+    const displayPoints = useMemo(() => {
+        const list: LanePoint[] = [
+            { id: "__lane-start", week: 0, hours: boundaryStart, fixed: true },
+            ...sortedPoints,
+        ];
+
+        if (sortedPoints.length === 0 || sortedPoints[sortedPoints.length - 1]?.week !== weeks) {
+            list.push({ id: "__lane-end", week: weeks, hours: boundaryEnd, fixed: true });
+        } else {
+            list.push({
+                id: "__lane-end",
+                week: weeks,
+                hours: boundaryEnd,
+                fixed: true,
+            });
+        }
+
+        return list;
+    }, [sortedPoints, boundaryStart, boundaryEnd, weeks]);
 
     const hoursToY = useCallback(
         (hours: number) => {
@@ -153,46 +177,38 @@ function Lane({
         [maxHours]
     );
 
-    const sortedPoints = useMemo(() => sortPoints(points), [points]);
-
-    const interpolateHoursAtWeek = useCallback(
+    const interpolateDisplayHours = useCallback(
         (week: number) => {
-            if (sortedPoints.length === 0) {
-                return 0;
-            }
-
             const clampedWeek = clamp(week, 0, weeks);
-
-            for (let index = sortedPoints.length - 1; index >= 0; index -= 1) {
-                const candidate = sortedPoints[index];
-                if (candidate && candidate.week <= clampedWeek) {
-                    return candidate.hours;
+            let last = displayPoints[0];
+            for (let index = 0; index < displayPoints.length; index += 1) {
+                const point = displayPoints[index];
+                if (!point) {
+                    continue;
                 }
+                if (point.week > clampedWeek) {
+                    break;
+                }
+                last = point;
             }
-
-            return 0;
+            return last?.hours ?? 0;
         },
-        [sortedPoints, weeks]
+        [displayPoints, weeks]
     );
 
     const stepPath = useMemo(() => {
-        if (sortedPoints.length < 2) {
+        if (displayPoints.length === 0) {
             return "";
         }
 
         const commands: string[] = [];
-        const firstPoint = sortedPoints[0];
-        if (!firstPoint) {
-            return "";
-        }
-        let currentX = (firstPoint.week / weeks) * VIEWBOX_WIDTH;
-        let currentY = hoursToY(firstPoint.hours);
-
+        let currentX = (displayPoints[0].week / weeks) * VIEWBOX_WIDTH;
+        let currentY = hoursToY(displayPoints[0].hours);
         commands.push(`M ${currentX} ${currentY}`);
 
-        for (let index = 0; index < sortedPoints.length - 1; index += 1) {
-            const currentPoint = sortedPoints[index];
-            const nextPoint = sortedPoints[index + 1];
+        for (let index = 0; index < displayPoints.length - 1; index += 1) {
+            const currentPoint = displayPoints[index];
+            const nextPoint = displayPoints[index + 1];
             if (!currentPoint || !nextPoint) {
                 continue;
             }
@@ -211,12 +227,8 @@ function Lane({
             currentY = nextY;
         }
 
-        if (currentX !== VIEWBOX_WIDTH) {
-            commands.push(`H ${VIEWBOX_WIDTH}`);
-        }
-
         return commands.join(" ");
-    }, [sortedPoints, hoursToY, weeks]);
+    }, [displayPoints, hoursToY, weeks]);
 
     const emitPointsChange = useCallback(
         (mutator: (current: LanePoint[]) => LanePoint[]) => {
@@ -224,23 +236,21 @@ function Lane({
                 return;
             }
             const current = pointsRef.current;
-            const next = sortPoints(mutator(current));
+            const next = sortPoints(mutator(current)).map((point) => ({
+                ...point,
+                hours: clamp(point.hours, 0, maxHours),
+            }));
             onPointsChange(next);
         },
-        [canEdit, onPointsChange]
+        [canEdit, onPointsChange, maxHours]
     );
 
     const handleLaneDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
         if (event.altKey) {
             return;
         }
-        const rect = event.currentTarget.getBoundingClientRect();
-        const ratioX = clamp((event.clientX - rect.left) / rect.width, 0, 1);
-        const week = clamp(Math.round(ratioX * weeks), 0, weeks);
-        const absoluteWeek = weekOffset + week;
-        setFocused(true);
-        onZoomRequest?.({ week, absoluteWeek });
-    }, [weeks, weekOffset, onZoomRequest]);
+        setFocused((prev) => !prev);
+    }, []);
 
     const updateHoverInfo = useCallback(
         (event: ReactPointerEvent<SVGSVGElement>) => {
@@ -255,33 +265,21 @@ function Lane({
 
             const rawWeekPosition = ratioX * weeks;
             const weekIndex = clamp(Math.round(rawWeekPosition), 0, weeks);
-            const absoluteWeek = weekOffset + weekIndex;
-
-            let isoYearValue = resolvedBaseYear;
-            let isoWeekValue = Math.round(absoluteWeek <= 0 ? 1 : absoluteWeek);
-
-            if (absoluteWeek > resolvedCurrentYearWeeks && resolvedNextYearWeeks > 0) {
-                isoYearValue = resolvedBaseYear + 1;
-                isoWeekValue = Math.round(absoluteWeek - resolvedCurrentYearWeeks);
-                if (isoWeekValue < 1) {
-                    isoWeekValue = 1;
-                }
-            }
-
-            const hours = interpolateHoursAtWeek(weekIndex);
-            const { startLabel, endLabel } = getIsoWeekDateRange(isoYearValue, isoWeekValue);
+            const isoWeekValue = clamp(weekIndex + 1, 1, weeks);
+            const hours = interpolateDisplayHours(rawWeekPosition);
+            const { startLabel, endLabel } = getIsoWeekDateRange(year, isoWeekValue);
 
             setHoverInfo({
                 ratioX,
                 ratioY,
                 isoWeek: isoWeekValue,
-                isoYear: isoYearValue,
+                isoYear: year,
                 startLabel,
                 endLabel,
                 hours,
             });
         },
-        [weeks, interpolateHoursAtWeek, resolvedBaseYear, weekOffset, resolvedCurrentYearWeeks, resolvedNextYearWeeks]
+        [weeks, interpolateDisplayHours, year]
     );
 
     const clearHoverInfo = useCallback(() => {
@@ -313,7 +311,7 @@ function Lane({
                     return current.filter((point) => point.week !== week);
                 }
 
-                const defaultHours = interpolateHoursAtWeek(week);
+                const defaultHours = interpolateDisplayHours(week);
                 const snappedHours = roundToStep(defaultHours, snapStepHours);
 
                 const newPoint: LanePoint = {
@@ -325,11 +323,11 @@ function Lane({
                 return [...current, newPoint];
             });
         },
-        [focused, canEdit, emitPointsChange, interpolateHoursAtWeek, snapStepHours, maxHours]
+        [focused, canEdit, emitPointsChange, interpolateDisplayHours, snapStepHours, maxHours, weeks]
     );
 
     const handlePointPointerDown = useCallback(
-        (event: ReactPointerEvent<SVGCircleElement>, pointId: string, fixed?: boolean) => {
+        (event: ReactPointerEvent<SVGCircleElement>, pointId: string) => {
             if (!focused || !event.altKey || !canEdit) {
                 return;
             }
@@ -339,7 +337,6 @@ function Lane({
             dragStateRef.current = {
                 type: "point",
                 pointId,
-                fixed,
                 pointerId: event.pointerId,
             };
         },
@@ -347,84 +344,15 @@ function Lane({
     );
 
     const handlePointDoubleClick = useCallback(
-        (event: ReactMouseEvent<SVGCircleElement>, pointId: string, fixed?: boolean) => {
-            if (!canEdit || fixed || !event.altKey) {
+        (event: ReactMouseEvent<SVGCircleElement>, pointId: string) => {
+            if (!canEdit || !event.altKey || !focused) {
                 return;
             }
             event.preventDefault();
             event.stopPropagation();
             emitPointsChange((current) => current.filter((point) => point.id !== pointId));
         },
-        [canEdit, emitPointsChange]
-    );
-
-    const handleLinePointerDown = useCallback(
-        (event: ReactPointerEvent<SVGPathElement>) => {
-            if (!focused || !event.altKey || !canEdit) {
-                return;
-            }
-            event.preventDefault();
-            event.stopPropagation();
-
-            const svg = svgRef.current;
-            if (!svg || sortedPoints.length < 2) {
-                return;
-            }
-
-            const rect = svg.getBoundingClientRect();
-            const ratioX = clamp((event.clientX - rect.left) / rect.width, 0, 1);
-            const pointerStartWeek = clamp(Math.round(ratioX * weeks), 0, weeks);
-            const pointerStartHours = roundToStep(
-                interpolateHoursAtWeek(pointerStartWeek),
-                snapStepHours
-            );
-
-            let segmentStartIndex = 0;
-            let segmentEndIndex = 1;
-
-            const firstPoint = sortedPoints[0]!;
-            const lastPoint = sortedPoints[sortedPoints.length - 1]!;
-
-            if (pointerStartWeek <= firstPoint.week) {
-                segmentStartIndex = 0;
-                segmentEndIndex = 1;
-            } else if (pointerStartWeek >= lastPoint.week) {
-                segmentStartIndex = sortedPoints.length - 2;
-                segmentEndIndex = sortedPoints.length - 1;
-            } else {
-                for (let index = 0; index < sortedPoints.length - 1; index += 1) {
-                    const current = sortedPoints[index];
-                    const next = sortedPoints[index + 1];
-                    if (
-                        current &&
-                        next &&
-                        pointerStartWeek >= current.week &&
-                        pointerStartWeek <= next.week
-                    ) {
-                        segmentStartIndex = index;
-                        segmentEndIndex = index + 1;
-                        break;
-                    }
-                }
-            }
-
-            const originalPoints = sortPoints(pointsRef.current.map((point) => ({ ...point })));
-            if (!originalPoints[segmentStartIndex] || !originalPoints[segmentEndIndex]) {
-                return;
-            }
-
-            event.currentTarget.setPointerCapture(event.pointerId);
-            dragStateRef.current = {
-                type: "line",
-                pointerId: event.pointerId,
-                pointerStartWeek,
-                pointerStartHours,
-                segmentStartIndex,
-                segmentEndIndex,
-                originalPoints,
-            };
-        },
-        [focused, canEdit, sortedPoints, weeks, interpolateHoursAtWeek, snapStepHours]
+        [canEdit, focused, emitPointsChange]
     );
 
     useEffect(() => {
@@ -432,7 +360,7 @@ function Lane({
             const state = dragStateRef.current;
             const svg = svgRef.current;
 
-            if (!svg || !state || !canEdit) {
+            if (!svg || !state || !canEdit || state.type !== "point") {
                 return;
             }
 
@@ -441,24 +369,15 @@ function Lane({
             }
 
             const rect = svg.getBoundingClientRect();
+            const ratioX = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+            const ratioY = clamp((event.clientY - rect.top) / rect.height, 0, 1);
 
-            if (state.type === "point") {
-                const targetPoint = pointsRef.current.find((point) => point.id === state.pointId);
-                if (!targetPoint) {
-                    return;
-                }
+            const week = clamp(Math.round(ratioX * weeks), 0, weeks);
+            const snappedHours = roundToStep(yToHours(ratioY), snapStepHours);
 
-                const ratioX = clamp((event.clientX - rect.left) / rect.width, 0, 1);
-                const ratioY = clamp((event.clientY - rect.top) / rect.height, 0, 1);
-
-                const week = state.fixed
-                    ? targetPoint.week
-                    : clamp(Math.round(ratioX * weeks), 0, weeks);
-
-                const snappedHours = roundToStep(yToHours(ratioY), snapStepHours);
-
-                emitPointsChange((current) =>
-                    current.map((point) =>
+            emitPointsChange((current) =>
+                current
+                    .map((point) =>
                         point.id === state.pointId
                             ? {
                                   ...point,
@@ -467,81 +386,14 @@ function Lane({
                               }
                             : point
                     )
-                );
-            } else if (state.type === "line") {
-                const ratioX = clamp((event.clientX - rect.left) / rect.width, 0, 1);
-                const ratioY = clamp((event.clientY - rect.top) / rect.height, 0, 1);
-                const targetWeek = clamp(Math.round(ratioX * weeks), 0, weeks);
-
-                const originalPoints = state.originalPoints;
-                const segmentStartIndex = state.segmentStartIndex;
-                const segmentEndIndex = state.segmentEndIndex;
-
-                const segmentStartPoint = originalPoints[segmentStartIndex];
-                const segmentEndPoint = originalPoints[segmentEndIndex];
-                if (!segmentStartPoint || !segmentEndPoint) {
-                    return;
-                }
-
-                const prevWeek =
-                    segmentStartIndex > 0
-                        ? originalPoints[segmentStartIndex - 1]?.week ?? segmentStartPoint.week
-                        : 0;
-                const nextWeek =
-                    segmentEndIndex < originalPoints.length - 1
-                        ? originalPoints[segmentEndIndex + 1]?.week ?? segmentEndPoint.week
-                        : weeks;
-
-                let deltaWeek = targetWeek - state.pointerStartWeek;
-                const minDeltaWeek = prevWeek - segmentStartPoint.week;
-                const maxDeltaWeek = nextWeek - segmentEndPoint.week;
-                deltaWeek = clamp(deltaWeek, minDeltaWeek, maxDeltaWeek);
-
-                const targetHours = roundToStep(yToHours(ratioY), snapStepHours);
-                let deltaHours = targetHours - state.pointerStartHours;
-                if (snapStepHours > 0) {
-                    deltaHours = Math.round(deltaHours / snapStepHours) * snapStepHours;
-                }
-
-                const segmentOriginalHours = originalPoints
-                    .slice(segmentStartIndex, segmentEndIndex + 1)
-                    .map((point) => point.hours);
-
-                const maxIncrease = Math.min(
-                    ...segmentOriginalHours.map((hours) => maxHours - hours)
-                );
-                const maxDecrease = Math.min(...segmentOriginalHours.map((hours) => hours));
-                deltaHours = clamp(deltaHours, -maxDecrease, maxIncrease);
-
-                if (deltaWeek === 0 && deltaHours === 0) {
-                    return;
-                }
-
-                const newPoints = originalPoints.map((point, index) => {
-                    if (index < segmentStartIndex || index > segmentEndIndex) {
-                        return { ...point };
-                    }
-
-                    const updatedPoint: LanePoint = { ...point };
-
-                    if (deltaWeek !== 0 && !point.fixed) {
-                        updatedPoint.week = clamp(point.week + deltaWeek, 0, weeks);
-                    }
-
-                    if (deltaHours !== 0) {
-                        const nextHours = clamp(
-                            roundToStep(point.hours + deltaHours, snapStepHours),
-                            0,
-                            maxHours
-                        );
-                        updatedPoint.hours = nextHours;
-                    }
-
-                    return updatedPoint;
-                });
-
-                emitPointsChange(() => newPoints);
-            }
+                    .filter((point, index, arr) => {
+                        if (point.fixed) {
+                            return true;
+                        }
+                        const firstIndex = arr.findIndex((entry) => entry.week === point.week && !entry.fixed);
+                        return firstIndex === index;
+                    })
+            );
         };
 
         const handlePointerUp = (event: PointerEvent) => {
@@ -561,13 +413,19 @@ function Lane({
     }, [canEdit, emitPointsChange, maxHours, snapStepHours, weeks, yToHours]);
 
     const tooltipStyles: CSSProperties | undefined = useMemo(() => {
-        if (!hoverInfo) {
+        if (!hoverInfo || !svgRef.current) {
             return undefined;
         }
+        const svgRect = svgRef.current.getBoundingClientRect();
+        // Calculate the absolute position relative to the SVG container
+        const left = hoverInfo.ratioX * svgRect.width + svgRect.left;
+        const top = hoverInfo.ratioY * svgRect.height + svgRect.top;
         return {
-            left: `${hoverInfo.ratioX * 100}%`,
-            top: `${Math.min(hoverInfo.ratioY * 100, 92)}%`,
+            position: "fixed",
+            left: `${left}px`,
+            top: `${top}px`,
             transform: "translate(-50%, -120%)",
+            zIndex: 1000,
         };
     }, [hoverInfo]);
 
@@ -622,13 +480,15 @@ function Lane({
 
     return (
         <div
-            className="lane w-full p-4 flex flex-row items-center space-x-4 overflow-hidden cursor-pointer transition-all"
+            className="w-full rounded-md bg-slate-900/40 p-3"
             onDoubleClick={handleLaneDoubleClick}
         >
-            <div className="description text-xl font-bold text-center color-secondary text-white min-w-[220px] max-w-[220px] whitespace-normal break-words">
-                {description}
+            <div className="flex items-center gap-3">
+                <div className="flex-shrink-0 rounded bg-slate-800 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-slate-200">
+                    {description}
+                </div>
             </div>
-            <div className="line relative flex-1" style={{ height: `${lineHeight}px` }}>
+            <div className="mt-2">
                 <svg
                     ref={svgRef}
                     width="100%"
@@ -671,8 +531,6 @@ function Lane({
                             stroke="#00f5d4"
                             strokeWidth={4}
                             fill="none"
-                            onPointerDown={handleLinePointerDown}
-                            style={{ cursor: canEdit && focused ? "grab" : "default" }}
                         />
                     )}
                     {typeof activeWeek === "number" &&
@@ -696,26 +554,19 @@ function Lane({
                             const cy = hoursToY(point.hours);
                             const radius = Math.max(
                                 4,
-                                Math.min(
-                                    11,
-                                    4 + (point.hours / Math.max(1, capacityHours)) * 8
-                                )
+                                Math.min(11, 4 + (point.hours / Math.max(1, capacityHours)) * 8)
                             );
                             return (
                                 <circle
                                     key={point.id}
                                     cx={cx}
                                     cy={cy}
-                                    r={point.fixed ? radius + 1 : radius}
+                                    r={radius}
                                     fill="#f72585"
                                     stroke="#ffe3ff"
                                     strokeWidth={1}
-                                    onPointerDown={(event) =>
-                                        handlePointPointerDown(event, point.id, point.fixed)
-                                    }
-                                    onDoubleClick={(event) =>
-                                        handlePointDoubleClick(event, point.id, point.fixed)
-                                    }
+                                    onPointerDown={(event) => handlePointPointerDown(event, point.id)}
+                                    onDoubleClick={(event) => handlePointDoubleClick(event, point.id)}
                                     style={{ cursor: canEdit ? "grab" : "default" }}
                                 />
                             );
@@ -723,8 +574,18 @@ function Lane({
                 </svg>
                 {hoverInfo && tooltipStyles && (
                     <div
-                        className="pointer-events-none absolute z-20 rounded border border-slate-700/60 bg-slate-900/95 px-2 py-1 text-[10px] font-medium text-slate-100 shadow-lg backdrop-blur-sm"
-                        style={tooltipStyles}
+                        className="pointer-events-none -mt-4 rounded border border-slate-700/60 bg-slate-900/95 px-2 py-1 text-[10px] font-medium text-slate-100 shadow-lg backdrop-blur-sm"
+                       
+                        style={{
+                            ...tooltipStyles,
+                            minWidth: "auto",
+                            maxWidth: "180px",
+                            width: "auto",
+                            padding: "2px 6px",
+                            fontSize: "11px",
+                            position: "absolute",
+                            pointerEvents: "none",
+                        }}
                     >
                         <div>
                             {hoverInfo.isoYear} • W{hoverInfo.isoWeek.toString().padStart(2, "0")}

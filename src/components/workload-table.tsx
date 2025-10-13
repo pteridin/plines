@@ -33,15 +33,6 @@ type WorkloadTableProps = {
     weeklyCapacityHours?: number;
 };
 
-type ZoomState = {
-    laneId: string;
-    windowStart: number;
-    windowEnd: number;
-    currentYearWeeks: number;
-    prevYearWeeks: number;
-    nextYearWeeks: number;
-};
-
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
 const getISOWeekInfo = (date: Date) => {
@@ -70,52 +61,19 @@ const sortPoints = (points: LanePoint[]) =>
 
 const clonePoints = (points: LanePoint[]) => points.map((point) => ({ ...point }));
 
-const buildStepSeries = (points: LanePoint[], startWeek: number, span: number) => {
-    const sorted = sortPoints(points);
-    const result = Array(span + 1).fill(0) as number[];
-    let index = 0;
-    let currentValue = 0;
-
-    for (let offset = 0; offset <= span; offset += 1) {
-        const targetWeek = startWeek + offset;
-        while (index < sorted.length) {
-            const candidate = sorted[index];
-            if (!candidate || candidate.week > targetWeek) {
-                break;
-            }
-            currentValue = candidate.hours;
-            index += 1;
-        }
-        result[offset] = currentValue;
-    }
-
-    return result;
-};
-
-const buildWindowSeries = (
-    points: Array<{ absoluteWeek: number; hours: number }>,
-    windowStart: number,
-    span: number
+const projectLabelFor = (
+    catalog: ProjectSummary[],
+    projectId: string,
+    fallback?: string
 ) => {
-    const sorted = [...points].sort((a, b) => a.absoluteWeek - b.absoluteWeek);
-    const result = Array(span + 1).fill(0) as number[];
-    let index = 0;
-    let currentValue = 0;
-
-    for (let offset = 0; offset <= span; offset += 1) {
-        const target = windowStart + offset;
-        while (index < sorted.length) {
-            const candidate = sorted[index];
-            if (!candidate || candidate.absoluteWeek > target) {
-                break;
-            }
-            currentValue = candidate.hours;
-            index += 1;
-        }
-        result[offset] = currentValue;
+    const meta = catalog.find((project) => project.id === projectId);
+    if (meta) {
+        return meta.name;
     }
-
-    return result;
+    if (fallback && fallback.trim().length > 0) {
+        return fallback;
+    }
+    return projectId;
 };
 
 const collectAbsolutePoints = (
@@ -130,7 +88,7 @@ const collectAbsolutePoints = (
     const previousYearPoints = lane.pointsByYear[baseYear - 1] ?? [];
     previousYearPoints.forEach((point) => {
         absolutePoints.push({
-            absoluteWeek: point.week - prevYearWeeks,
+            absoluteWeek: point.absoluteWeek ?? point.week - prevYearWeeks,
             hours: point.hours,
         });
     });
@@ -138,7 +96,7 @@ const collectAbsolutePoints = (
     const currentYearPoints = lane.pointsByYear[baseYear] ?? [];
     currentYearPoints.forEach((point) => {
         absolutePoints.push({
-            absoluteWeek: point.week,
+            absoluteWeek: point.absoluteWeek ?? point.week,
             hours: point.hours,
         });
     });
@@ -146,26 +104,38 @@ const collectAbsolutePoints = (
     const nextYearPoints = lane.pointsByYear[baseYear + 1] ?? [];
     nextYearPoints.forEach((point) => {
         absolutePoints.push({
-            absoluteWeek: currentYearWeeks + point.week,
+            absoluteWeek: point.absoluteWeek ?? currentYearWeeks + point.week,
             hours: point.hours,
         });
     });
 
-    return absolutePoints;
+    return absolutePoints.sort((a, b) => a.absoluteWeek - b.absoluteWeek);
+};
+
+const valueAtAbsoluteWeek = (
+    sortedPoints: Array<{ absoluteWeek: number; hours: number }>,
+    absoluteWeek: number
+) => {
+    let value = 0;
+    for (let index = 0; index < sortedPoints.length; index += 1) {
+        const point = sortedPoints[index];
+        if (!point) {
+            continue;
+        }
+        if (point.absoluteWeek > absoluteWeek) {
+            break;
+        }
+        value = point.hours;
+    }
+    return value;
 };
 
 function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: WorkloadTableProps) {
     const todayInfo = useMemo(() => getISOWeekInfo(new Date()), []);
     const [displayYear, setDisplayYear] = useState(todayInfo.year);
     const currentYearWeeks = useMemo(() => getISOWeeksInYear(displayYear), [displayYear]);
-    const prevYearWeeks = useMemo(
-        () => getISOWeeksInYear(displayYear - 1),
-        [displayYear]
-    );
-    const nextYearWeeks = useMemo(
-        () => getISOWeeksInYear(displayYear + 1),
-        [displayYear]
-    );
+    const prevYearWeeks = useMemo(() => getISOWeeksInYear(displayYear - 1), [displayYear]);
+    const nextYearWeeks = useMemo(() => getISOWeeksInYear(displayYear + 1), [displayYear]);
     const activeWeekPosition = useMemo(() => {
         if (todayInfo.year !== displayYear) {
             return null;
@@ -180,7 +150,6 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
     const [isLoading, setIsLoading] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
-    const [zoomState, setZoomState] = useState<ZoomState | null>(null);
 
     useEffect(() => {
         const loadProjects = async () => {
@@ -209,19 +178,23 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                 const lanes = new Map<string, ProjectLaneState>();
                 const ingest = (records: typeof currentData, year: number) => {
                     records.forEach((record) => {
-                        if (record.points.length === 0) {
-                            return;
-                        }
                         const existing = lanes.get(record.projectId) ?? {
                             id: record.projectId,
                             name: record.name,
                             active: record.active,
                             pointsByYear: {} as LaneYearMap,
                         };
-                        existing.name = record.name;
-                        existing.active = record.active;
+                        existing.name = projectLabelFor(projectsCatalog, record.projectId, record.name);
+                        const catalogActive = projectsCatalog.find(
+                            (project) => project.id === record.projectId
+                        )?.active;
+                        existing.active = catalogActive ?? record.active;
                         existing.pointsByYear[year] = sortPoints(
-                            record.points.map((point) => ({ ...point, year }))
+                            record.points.map((point) => ({
+                                ...point,
+                                year,
+                                absoluteWeek: point.absoluteWeek ?? point.week,
+                            }))
                         );
                         lanes.set(record.projectId, existing);
                     });
@@ -232,7 +205,6 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                 ingest(nextData, displayYear + 1);
 
                 setProjectLanes(Array.from(lanes.values()));
-                setZoomState(null);
             } catch (error) {
                 if (!cancelled) {
                     setErrorMessage("Failed to load workload data. Please try again.");
@@ -249,11 +221,7 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
         return () => {
             cancelled = true;
         };
-    }, [userId, displayYear]);
-
-    useEffect(() => {
-        setZoomState(null);
-    }, [displayYear]);
+    }, [userId, displayYear, projectsCatalog]);
 
     const goToPreviousYear = useCallback(() => setDisplayYear((year) => year - 1), []);
     const goToNextYear = useCallback(() => setDisplayYear((year) => year + 1), []);
@@ -272,15 +240,10 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                     lane.id === laneId
                         ? {
                               ...lane,
-                              pointsByYear: (() => {
-                                  const updated: LaneYearMap = { ...lane.pointsByYear };
-                                  if (normalizedPoints.length === 0) {
-                                      delete updated[year];
-                                  } else {
-                                      updated[year] = clonePoints(normalizedPoints);
-                                  }
-                                  return updated;
-                              })(),
+                              pointsByYear: {
+                                  ...lane.pointsByYear,
+                                  [year]: clonePoints(normalizedPoints),
+                              },
                           }
                         : lane
                 )
@@ -293,95 +256,13 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
         [userId]
     );
 
-    const handleZoomLaneChange = useCallback(
-        (laneId: string, nextPoints: LanePoint[]) => {
-            if (!zoomState) {
-                return;
-            }
-
-            const byYear = new Map<number, LanePoint[]>();
-
-            nextPoints.forEach((point) => {
-                const absoluteWeek = zoomState.windowStart + point.week;
-                let targetYear = displayYear;
-                let weekInYear = absoluteWeek;
-
-                if (absoluteWeek < 0) {
-                    targetYear = displayYear - 1;
-                    weekInYear = absoluteWeek + zoomState.prevYearWeeks;
-                } else if (absoluteWeek > zoomState.currentYearWeeks) {
-                    targetYear = displayYear + 1;
-                    weekInYear = absoluteWeek - zoomState.currentYearWeeks;
-                }
-
-                if (targetYear < displayYear - 1 || targetYear > displayYear + 1) {
-                    return;
-                }
-
-                const maxWeekForYear =
-                    targetYear === displayYear - 1
-                        ? zoomState.prevYearWeeks
-                        : targetYear === displayYear + 1
-                        ? zoomState.nextYearWeeks
-                        : zoomState.currentYearWeeks;
-
-                const bucket = byYear.get(targetYear) ?? [];
-                bucket.push({
-                    ...point,
-                    week: clamp(Math.round(weekInYear), 0, maxWeekForYear),
-                    year: targetYear,
-                });
-                byYear.set(targetYear, bucket);
-            });
-
-            if (!byYear.size) {
-                return;
-            }
-
-            byYear.forEach((points, year) => {
-                handleLaneChange(laneId, year, points);
-            });
-        },
-        [displayYear, handleLaneChange, zoomState]
-    );
-
-    const handleZoomRequest = useCallback(
-        (laneId: string, info: { absoluteWeek: number }) => {
-            const spanBefore = 10;
-            const spanAfter = 10;
-            const minStart = -prevYearWeeks;
-            const maxEnd = currentYearWeeks + nextYearWeeks;
-
-            const proposedStart = Math.round(info.absoluteWeek) - spanBefore;
-            const proposedEnd = Math.round(info.absoluteWeek) + spanAfter;
-
-            let windowStart = clamp(proposedStart, minStart, maxEnd);
-            let windowEnd = clamp(proposedEnd, minStart, maxEnd);
-
-            if (windowEnd <= windowStart) {
-                windowEnd = Math.min(maxEnd, windowStart + 1);
-            }
-
-            setZoomState({
-                laneId,
-                windowStart,
-                windowEnd,
-                currentYearWeeks,
-                prevYearWeeks,
-                nextYearWeeks,
-            });
-        },
-        [currentYearWeeks, nextYearWeeks, prevYearWeeks]
-    );
-
-    const clearZoom = useCallback(() => setZoomState(null), []);
-
     const selectableProjects = useMemo(() => {
         const existingCurrentYear = new Set(
             projectLanes
                 .filter((lane) => (lane.pointsByYear[displayYear]?.length ?? 0) > 0)
                 .map((lane) => lane.id)
         );
+
         return projectsCatalog.filter(
             (project) => project.active && !existingCurrentYear.has(project.id)
         );
@@ -429,6 +310,10 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
 
         try {
             const updated = await updateWorkload(userId, selectedProjectId, displayYear, defaultPoints);
+            const label = projectLabelFor(projectsCatalog, updated.projectId, updated.name);
+            const activeFlag =
+                projectsCatalog.find((project) => project.id === updated.projectId)?.active ??
+                updated.active;
 
             setProjectLanes((prev) => {
                 const existing = prev.find((lane) => lane.id === updated.projectId);
@@ -437,8 +322,8 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                         lane.id === updated.projectId
                             ? {
                                   ...lane,
-                                  name: updated.name,
-                                  active: updated.active,
+                                  name: label,
+                                  active: activeFlag,
                                   pointsByYear: {
                                       ...lane.pointsByYear,
                                       [displayYear]: sortPoints(
@@ -454,8 +339,8 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                     ...prev,
                     {
                         id: updated.projectId,
-                        name: updated.name,
-                        active: updated.active,
+                        name: label,
+                        active: activeFlag,
                         pointsByYear: {
                             [displayYear]: sortPoints(
                                 updated.points.map((point) => ({ ...point, year: displayYear }))
@@ -469,20 +354,27 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
         } finally {
             setIsSaving(false);
         }
-    }, [selectedProjectId, todayInfo.week, currentYearWeeks, userId, displayYear]);
+    }, [selectedProjectId, todayInfo.week, currentYearWeeks, userId, displayYear, projectsCatalog]);
 
-    const lanesForDisplay = useMemo(
-        () =>
-            projectLanes
-                .filter((lane) => (lane.pointsByYear[displayYear]?.length ?? 0) > 0)
-                .sort((a, b) => a.name.localeCompare(b.name)),
-        [projectLanes, displayYear]
-    );
+    const lanesForDisplay = useMemo(() => {
+        if (projectLanes.length === 0) {
+            return [];
+        }
+
+        return projectLanes
+            .filter((lane) => {
+                const prevPoints = lane.pointsByYear[displayYear - 1] ?? [];
+                const currentPoints = lane.pointsByYear[displayYear] ?? [];
+                const nextPoints = lane.pointsByYear[displayYear + 1] ?? [];
+                return prevPoints.length + currentPoints.length + nextPoints.length > 0;
+            })
+            .sort((a, b) => a.name.localeCompare(b.name));
+    }, [projectLanes, displayYear]);
 
     const maxHours = (weeklyCapacityHours * 120) / 100;
 
     const summary = useMemo(() => {
-        if (projectLanes.length === 0) {
+        if (lanesForDisplay.length === 0) {
             return {
                 sumPoints: [] as LanePoint[],
                 peakHours: 0,
@@ -490,71 +382,32 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
             };
         }
 
-        if (!zoomState) {
-            const span = currentYearWeeks;
-            const weeklyTotals = Array(span + 1).fill(0) as number[];
+        const weeklyTotals = Array(currentYearWeeks + 1).fill(0) as number[];
 
-            projectLanes.forEach((lane) => {
-                const points = lane.pointsByYear[displayYear] ?? [];
-                if (points.length === 0) {
-                    return;
-                }
-                const series = buildStepSeries(points, 0, span);
-                series.forEach((value, index) => {
-                    if (typeof weeklyTotals[index] === "number") {
-                        weeklyTotals[index] += value;
-                    }
-                });
-            });
-
-            const clampedTotals = weeklyTotals.map((value) => clamp(value, 0, maxHours));
-            const peakHours = Math.max(...clampedTotals, 0);
-            const peakPercent = peakHours === 0 ? 0 : Math.round((peakHours / maxHours) * 100);
-
-            const sumPoints: LanePoint[] = clampedTotals.map((hours, week) => ({
-                id: `sum-${week}`,
-                week,
-                hours,
-                fixed: true,
-                year: displayYear,
-            }));
-
-            return {
-                sumPoints,
-                peakHours,
-                peakPercent,
-            };
-        }
-
-        const span = Math.max(1, zoomState.windowEnd - zoomState.windowStart);
-        const weeklyTotals = Array(span + 1).fill(0) as number[];
-
-        projectLanes.forEach((lane) => {
+        lanesForDisplay.forEach((lane) => {
             const absolutePoints = collectAbsolutePoints(
                 lane,
                 displayYear,
-                zoomState.prevYearWeeks,
-                zoomState.currentYearWeeks,
-                zoomState.nextYearWeeks
+                prevYearWeeks,
+                currentYearWeeks,
+                nextYearWeeks
             );
             if (absolutePoints.length === 0) {
                 return;
             }
-            const series = buildWindowSeries(absolutePoints, zoomState.windowStart, span);
-            series.forEach((value, index) => {
-                if (typeof weeklyTotals[index] === "number") {
-                    weeklyTotals[index] += value;
-                }
-            });
+
+            for (let week = 0; week <= currentYearWeeks; week += 1) {
+                weeklyTotals[week] += valueAtAbsoluteWeek(absolutePoints, week);
+            }
         });
 
         const clampedTotals = weeklyTotals.map((value) => clamp(value, 0, maxHours));
         const peakHours = Math.max(...clampedTotals, 0);
         const peakPercent = peakHours === 0 ? 0 : Math.round((peakHours / maxHours) * 100);
 
-        const sumPoints: LanePoint[] = clampedTotals.map((hours, offset) => ({
-            id: `sum-zoom-${offset}`,
-            week: offset,
+        const sumPoints: LanePoint[] = clampedTotals.map((hours, week) => ({
+            id: `sum-${week}`,
+            week,
             hours,
             fixed: true,
             year: displayYear,
@@ -565,105 +418,47 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
             peakHours,
             peakPercent,
         };
-    }, [projectLanes, displayYear, zoomState, currentYearWeeks, maxHours]);
+    }, [lanesForDisplay, displayYear, prevYearWeeks, currentYearWeeks, nextYearWeeks, maxHours]);
 
     const renderLane = useCallback(
         (lane: ProjectLaneState) => {
-            const basePoints = lane.pointsByYear[displayYear] ?? [];
+            const absolutePoints = collectAbsolutePoints(
+                lane,
+                displayYear,
+                prevYearWeeks,
+                currentYearWeeks,
+                nextYearWeeks
+            );
 
-            const isHidden = zoomState !== null && zoomState.laneId !== lane.id;
+            const startValue = valueAtAbsoluteWeek(absolutePoints, 0);
+            const endValue = valueAtAbsoluteWeek(absolutePoints, currentYearWeeks);
 
-            if (isHidden) {
-                return null;
-            }
+            const actualPoints = sortPoints(
+                clonePoints(lane.pointsByYear[displayYear] ?? []).map((point) => ({
+                    ...point,
+                    hours: clamp(point.hours, 0, maxHours),
+                }))
+            );
 
-            if (!zoomState) {
-                return (
-                    <Lane
-                        key={lane.id}
-                        description={lane.name}
-                        points={clonePoints(basePoints)}
-                        onPointsChange={(next) => handleLaneChange(lane.id, displayYear, next)}
-                        editable
-                        capacityHours={weeklyCapacityHours}
-                        snapStepHours={0.5}
-                        totalWeeks={currentYearWeeks}
-                        activeWeek={activeWeekPosition}
-                        year={displayYear}
-                        onZoomRequest={(info) => handleZoomRequest(lane.id, info)}
-                    />
-                );
-            }
-
-            const span = Math.max(1, zoomState.windowEnd - zoomState.windowStart);
-            const windowPoints: LanePoint[] = [];
-
-            const previousYearPoints = lane.pointsByYear[displayYear - 1] ?? [];
-            previousYearPoints.forEach((point) => {
-                const absoluteWeek = point.week - zoomState.prevYearWeeks;
-                if (
-                    absoluteWeek >= zoomState.windowStart &&
-                    absoluteWeek <= zoomState.windowEnd
-                ) {
-                    windowPoints.push({
-                        ...point,
-                        week: absoluteWeek - zoomState.windowStart,
-                    });
-                }
-            });
-
-            basePoints.forEach((point) => {
-                const absoluteWeek = point.week;
-                if (
-                    absoluteWeek >= zoomState.windowStart &&
-                    absoluteWeek <= zoomState.windowEnd
-                ) {
-                    windowPoints.push({
-                        ...point,
-                        week: absoluteWeek - zoomState.windowStart,
-                    });
-                }
-            });
-
-            const nextYearPoints = lane.pointsByYear[displayYear + 1] ?? [];
-            nextYearPoints.forEach((point) => {
-                const absoluteWeek = zoomState.currentYearWeeks + point.week;
-                if (
-                    absoluteWeek >= zoomState.windowStart &&
-                    absoluteWeek <= zoomState.windowEnd
-                ) {
-                    windowPoints.push({
-                        ...point,
-                        week: absoluteWeek - zoomState.windowStart,
-                    });
-                }
-            });
-
-            if (windowPoints.length === 0) {
-                return null;
-            }
+            const handlePointsChange = (next: LanePoint[]) => {
+                const actualNext = next.filter((point) => !point.fixed);
+                handleLaneChange(lane.id, displayYear, actualNext);
+            };
 
             return (
                 <Lane
-                    key={`${lane.id}-zoom`}
-                    description={`${lane.name} (zoom)`}
-                    points={sortPoints(windowPoints)}
-                    onPointsChange={(next) => handleZoomLaneChange(lane.id, next)}
+                    key={lane.id}
+                    description={lane.name}
+                    points={actualPoints}
+                    onPointsChange={handlePointsChange}
                     editable
                     capacityHours={weeklyCapacityHours}
                     snapStepHours={0.5}
-                    totalWeeks={span}
-                    activeWeek={
-                        typeof activeWeekPosition === "number"
-                            ? activeWeekPosition - zoomState.windowStart
-                            : null
-                    }
+                    totalWeeks={currentYearWeeks}
+                    activeWeek={activeWeekPosition}
                     year={displayYear}
-                    weekOffset={zoomState.windowStart}
-                    baseYear={displayYear}
-                    currentYearWeeks={zoomState.currentYearWeeks}
-                    nextYearWeeks={zoomState.nextYearWeeks}
-                    onZoomRequest={(info) => handleZoomRequest(lane.id, info)}
+                    startValue={startValue}
+                    endValue={endValue}
                 />
             );
         },
@@ -672,69 +467,57 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
             activeWeekPosition,
             weeklyCapacityHours,
             currentYearWeeks,
+            prevYearWeeks,
+            nextYearWeeks,
+            maxHours,
             handleLaneChange,
-            handleZoomLaneChange,
-            handleZoomRequest,
-            zoomState,
         ]
     );
 
     return (
-        <div className="workload-table w-full space-y-6 text-white">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="workload-table w-full space-y-5 text-white">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
                 <div>
-                    <h2 className="text-2xl font-semibold">{employeeName}</h2>
-                    <p className="text-sm text-slate-300">
+                    <h2 className="text-xl font-semibold">{employeeName}</h2>
+                    <p className="text-xs text-slate-300">
                         Weekly capacity: {weeklyCapacityHours}h (120% ceiling: {maxHours.toFixed(1)}h)
                     </p>
                 </div>
-                <div className="flex flex-col items-end gap-2 text-sm text-slate-300">
-                    <div className="flex flex-wrap items-center gap-2">
-                        <button
-                            type="button"
-                            onClick={goToPreviousYear}
-                            className="rounded border border-slate-600/70 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:bg-slate-700/60"
-                        >
-                            Prev
-                        </button>
-                        <span className="text-base font-semibold text-white">{displayYear}</span>
-                        <button
-                            type="button"
-                            onClick={goToNextYear}
-                            className="rounded border border-slate-600/70 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:bg-slate-700/60"
-                        >
-                            Next
-                        </button>
-                        {zoomState && (
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                className="border-slate-600/70 bg-slate-800/60 text-xs"
-                                onClick={clearZoom}
-                            >
-                                Reset Zoom
-                            </Button>
-                        )}
-                    </div>
-                    <div className="text-xs text-slate-400">
-                        Weeks in year: {currentYearWeeks} (± next year {nextYearWeeks})
-                    </div>
-                    <div>Projects shown: {lanesForDisplay.length}</div>
-                    <div>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
+                    <button
+                        type="button"
+                        onClick={goToPreviousYear}
+                        className="rounded border border-slate-600/70 px-2 py-1 font-semibold uppercase tracking-wide text-slate-200 transition hover:bg-slate-700/60"
+                    >
+                        Prev
+                    </button>
+                    <span className="text-sm font-semibold text-white">{displayYear}</span>
+                    <button
+                        type="button"
+                        onClick={goToNextYear}
+                        className="rounded border border-slate-600/70 px-2 py-1 font-semibold uppercase tracking-wide text-slate-200 transition hover:bg-slate-700/60"
+                    >
+                        Next
+                    </button>
+                    <span className="ml-2 text-slate-400">
+                        Weeks: {currentYearWeeks} (prev {prevYearWeeks} / next {nextYearWeeks})
+                    </span>
+                    <span>Projects: {lanesForDisplay.length}</span>
+                    <span>
                         Peak load: {summary.peakHours.toFixed(1)}h ({summary.peakPercent}%)
-                    </div>
+                    </span>
                 </div>
             </div>
 
-            <div className="flex flex-col gap-3 rounded-md border border-slate-700/60 bg-slate-900/40 p-4">
-                <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-col gap-3 rounded-md border border-slate-700/60 bg-slate-900/40 p-3">
+                <div className="flex flex-wrap items-center gap-2">
                     <Select
                         value={selectedProjectId}
                         onValueChange={setSelectedProjectId}
                         disabled={selectableProjects.length === 0 || isSaving}
                     >
-                        <SelectTrigger className="w-[220px] border-slate-600/70 bg-slate-800/50 text-left text-slate-100">
-                            <SelectValue placeholder="Select project to add" />
+                        <SelectTrigger className="w-[200px] border-slate-600/70 bg-slate-800/50 text-left text-slate-100">
+                            <SelectValue placeholder="Add project" />
                         </SelectTrigger>
                         <SelectContent className="border-slate-600/70 bg-slate-800 text-slate-100">
                             {selectableProjects.map((project) => (
@@ -749,7 +532,7 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                         disabled={!selectedProjectId || isSaving}
                         className="bg-slate-100 text-slate-900 hover:bg-white/80"
                     >
-                        Add Project
+                        Add
                     </Button>
                     {selectableProjects.length === 0 && (
                         <span className="text-xs text-slate-400">
@@ -768,47 +551,34 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                     <div className="text-sm text-slate-400">Loading workload data…</div>
                 ) : lanesForDisplay.length === 0 ? (
                     <div className="text-sm text-slate-400">
-                        No projects with workload recorded for {displayYear}.
+                        No workload recorded around {displayYear}.
                     </div>
                 ) : (
                     lanesForDisplay.map((lane) => renderLane(lane))
                 )}
 
                 {!isLoading && summary.sumPoints.length > 0 && (
-                    <div className="pt-2">
+                    <div className="pt-1">
                         <Lane
                             description="Total workload"
                             points={summary.sumPoints}
                             editable={false}
                             capacityHours={weeklyCapacityHours}
                             showBands
-                            totalWeeks={
-                                zoomState
-                                    ? Math.max(1, zoomState.windowEnd - zoomState.windowStart)
-                                    : currentYearWeeks
-                            }
-                            activeWeek={
-                                zoomState
-                                    ? typeof activeWeekPosition === "number"
-                                        ? activeWeekPosition - zoomState.windowStart
-                                        : null
-                                    : activeWeekPosition
-                            }
+                            totalWeeks={currentYearWeeks}
+                            activeWeek={activeWeekPosition}
                             year={displayYear}
-                            weekOffset={zoomState ? zoomState.windowStart : 0}
-                            baseYear={displayYear}
-                            currentYearWeeks={currentYearWeeks}
-                            nextYearWeeks={nextYearWeeks}
+                            startValue={summary.sumPoints[0]?.hours ?? 0}
+                            endValue={summary.sumPoints[summary.sumPoints.length - 1]?.hours ?? 0}
                         />
                     </div>
                 )}
             </div>
 
             <p className="text-xs text-slate-400">
-                Double-click a lane to zoom around that week (±10 weeks across year boundaries). While focused,
-                hold Alt and double-click to add/remove control points, or Alt-drag points/lines to adjust
-                workload in 0.5h steps. Inactive projects now appear whenever workload exists, and every edit is
-                persisted through the mock API.
+                Double-click a lane to focus it, then use Alt + double-click to add or remove control points, or
+                Alt + drag points to fine-tune workload in 0.5h steps. The total workload lane aggregates every
+                project across the year.
             </p>
         </div>
     );
