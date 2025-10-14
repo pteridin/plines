@@ -88,6 +88,29 @@ const roundToStep = (value: number, step: number) => {
 
 const sortPoints = (points: LanePoint[]) => [...points].sort((a, b) => a.week - b.week);
 
+const pointsAreEqual = (left: LanePoint[], right: LanePoint[]) => {
+    if (left.length !== right.length) {
+        return false;
+    }
+    for (let index = 0; index < left.length; index += 1) {
+        const a = left[index];
+        const b = right[index];
+        if (!a || !b) {
+            return false;
+        }
+        if (
+            a.id !== b.id ||
+            a.week !== b.week ||
+            a.hours !== b.hours ||
+            Boolean(a.fixed) !== Boolean(b.fixed) ||
+            (a.year ?? null) !== (b.year ?? null)
+        ) {
+            return false;
+        }
+    }
+    return true;
+};
+
 const toLocaleDay = (date: Date) =>
     date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
@@ -228,47 +251,109 @@ const useLaneMetrics = ({
         [safeCapacityHours, maxLoadPercent, snapStepHours]
     );
 
-    const sortedPoints = useMemo(
+    const sanitizedPoints = useMemo(
         () =>
             sortPoints(
-                points.map((point) => ({
-                    ...point,
-                    hours: clamp(point.hours, 0, maxHours),
-                }))
+                points.map((point) => {
+                    const normalizedWeek = clamp(Math.round(point.week), 1, weeks);
+                    return {
+                        ...point,
+                        week: normalizedWeek,
+                        hours: clamp(point.hours, 0, maxHours),
+                    };
+                })
             ),
-        [points, maxHours]
+        [points, maxHours, weeks]
+    );
+
+    const interiorPoints = useMemo(
+        () => sanitizedPoints.filter((point) => point.week > 1 && point.week < weeks),
+        [sanitizedPoints, weeks]
     );
 
     const boundaryStart = useMemo(
-        () => clamp(startValue ?? sortedPoints[0]?.hours ?? 0, 0, maxHours),
-        [startValue, sortedPoints, maxHours]
-    );
-
-    const boundaryEnd = useMemo(
         () =>
             clamp(
-                endValue ?? sortedPoints[sortedPoints.length - 1]?.hours ?? boundaryStart,
+                startValue ??
+                    sanitizedPoints.find((point) => point.week === 1)?.hours ??
+                    interiorPoints[0]?.hours ??
+                    0,
                 0,
                 maxHours
             ),
-        [endValue, sortedPoints, boundaryStart, maxHours]
+        [startValue, sanitizedPoints, interiorPoints, maxHours]
     );
 
+    const explicitEnd = typeof endValue === "number" ? endValue : null;
+
+    const boundaryEnd = useMemo(() => {
+        if (explicitEnd !== null) {
+            return clamp(explicitEnd, 0, maxHours);
+        }
+        const providedEnd = sanitizedPoints
+            .slice()
+            .reverse()
+            .find((point) => point.week === weeks);
+        if (providedEnd) {
+            return clamp(providedEnd.hours, 0, maxHours);
+        }
+        return 0;
+    }, [explicitEnd, sanitizedPoints, maxHours, weeks]);
+
     const displayPoints = useMemo(() => {
-        const base: LanePoint[] = [
-            { id: "__lane-start", week: 0, hours: boundaryStart, fixed: true },
-            ...sortedPoints,
+        const startPoint =
+            sanitizedPoints.find((point) => point.week === 1) ??
+            ({
+                id: "__lane-start",
+                week: 1,
+                hours: boundaryStart,
+                fixed: true,
+            } as LanePoint);
+
+        const endPoint =
+            sanitizedPoints.find((point) => point.week === weeks) ??
+            ({
+                id: "__lane-end",
+                week: weeks,
+                hours: boundaryEnd,
+                fixed: true,
+            } as LanePoint);
+
+        const middlePoints = sanitizedPoints.filter(
+            (point) => point.week > 1 && point.week < weeks
+        );
+
+        const combined = [
+            { ...startPoint, hours: clamp(startPoint.hours, 0, maxHours), fixed: true },
+            ...middlePoints.map((point) => ({
+                ...point,
+                hours: clamp(point.hours, 0, maxHours),
+            })),
+            { ...endPoint, hours: clamp(endPoint.hours, 0, maxHours), fixed: true },
         ];
 
-        const lastPoint = sortedPoints[sortedPoints.length - 1];
-        if (!lastPoint || lastPoint.week !== weeks) {
-            base.push({ id: "__lane-end", week: weeks, hours: boundaryEnd, fixed: true });
-        } else {
-            base.push({ id: "__lane-end", week: weeks, hours: boundaryEnd, fixed: true });
-        }
+        const uniqueByWeek = combined.reduce((acc, point) => {
+            const existingIndex = acc.findIndex((entry) => entry.week === point.week);
+            if (existingIndex === -1) {
+                acc.push(point);
+                return acc;
+            }
 
-        return base;
-    }, [sortedPoints, boundaryStart, boundaryEnd, weeks]);
+            const existing = acc[existingIndex];
+            if (existing.fixed && !point.fixed) {
+                return acc;
+            }
+            if (!existing.fixed && point.fixed) {
+                acc[existingIndex] = point;
+                return acc;
+            }
+
+            acc[existingIndex] = point;
+            return acc;
+        }, [] as LanePoint[]);
+
+        return sortPoints(uniqueByWeek);
+    }, [sanitizedPoints, boundaryStart, boundaryEnd, weeks, maxHours]);
 
     const hoursToY = useCallback(
         (hours: number) => {
@@ -343,12 +428,14 @@ const useLaneMetrics = ({
     return {
         safeCapacityHours,
         maxHours,
-        sortedPoints,
+        sortedPoints: interiorPoints,
         displayPoints,
         hoursToY,
         yToHours,
         interpolateDisplayHours,
         stepPath,
+        boundaryStart,
+        boundaryEnd,
     };
 };
 
@@ -390,29 +477,31 @@ const LanePoints = ({
     editable: boolean;
 }) => (
     <>
-        {points.map((point) => {
-            const cx = weekToX(point.week, weeks);
-            const cy = hoursToY(point.hours);
-            const scaleX = pointScale.scaleX > 0 ? pointScale.scaleX : 1;
-            const scaleY = pointScale.scaleY > 0 ? pointScale.scaleY : 1;
-            const rx = POINT_RADIUS / scaleX;
-            const ry = POINT_RADIUS / scaleY;
-            return (
-                <ellipse
-                    key={point.id}
-                    cx={cx}
-                    cy={cy}
-                    rx={rx}
-                    ry={ry}
-                    fill="#f72585"
-                    stroke="#ffe3ff"
-                    strokeWidth={1}
-                    vectorEffect="non-scaling-stroke"
-                    onPointerDown={(event) => onPointerDown(event, point.id)}
-                    style={{ cursor: editable ? "grab" : "default" }}
-                />
-            );
-        })}
+        {points
+            .filter((point) => point.week > 0 && point.week < weeks && !point.fixed)
+            .map((point) => {
+                const cx = weekToX(point.week, weeks);
+                const cy = hoursToY(point.hours);
+                const scaleX = pointScale.scaleX > 0 ? pointScale.scaleX : 1;
+                const scaleY = pointScale.scaleY > 0 ? pointScale.scaleY : 1;
+                const rx = POINT_RADIUS / scaleX;
+                const ry = POINT_RADIUS / scaleY;
+                return (
+                    <ellipse
+                        key={point.id}
+                        cx={cx}
+                        cy={cy}
+                        rx={rx}
+                        ry={ry}
+                        fill="#f72585"
+                        stroke="#ffe3ff"
+                        strokeWidth={1}
+                        vectorEffect="non-scaling-stroke"
+                        onPointerDown={(event) => onPointerDown(event, point.id)}
+                        style={{ cursor: editable ? "grab" : "default" }}
+                    />
+                );
+            })}
     </>
 );
 
@@ -639,6 +728,8 @@ function Lane({
         yToHours,
         interpolateDisplayHours,
         stepPath,
+        boundaryStart,
+        boundaryEnd,
     } = useLaneMetrics({
         points,
         weeks,
@@ -649,19 +740,99 @@ function Lane({
         endValue,
     });
 
+    const ensureBoundaryPoints = useCallback(
+        (candidate: LanePoint[]) => {
+            const normalized = candidate.map((point) => ({
+                ...point,
+                hours: clamp(point.hours, 0, maxHours),
+            }));
+
+            const startIndex = normalized.findIndex((point) => point.week === 0);
+            if (startIndex === -1) {
+                normalized.push({
+                    id: createPointId(),
+                    week: 0,
+                    hours: boundaryStart,
+                    fixed: true,
+                    year,
+                });
+            } else {
+                const existing = normalized[startIndex];
+                normalized[startIndex] = {
+                    ...existing,
+                    hours: clamp(existing.hours ?? boundaryStart, 0, maxHours),
+                    fixed: true,
+                    year: existing.year ?? year,
+                };
+            }
+
+            const endIndex = normalized.findIndex((point) => point.week === weeks);
+            if (endIndex === -1) {
+                normalized.push({
+                    id: createPointId(),
+                    week: weeks,
+                    hours: boundaryEnd,
+                    fixed: true,
+                    year,
+                });
+            } else {
+                const existingEnd = normalized[endIndex];
+                normalized[endIndex] = {
+                    ...existingEnd,
+                    hours: clamp(existingEnd.hours ?? boundaryEnd, 0, maxHours),
+                    fixed: true,
+                    year: existingEnd.year ?? year,
+                };
+            }
+
+            return normalized;
+        },
+        [boundaryStart, boundaryEnd, maxHours, weeks, year]
+    );
+
+    const normalizePoints = useCallback(
+        (candidate: LanePoint[]) => {
+            const withBoundaries = ensureBoundaryPoints(candidate);
+            return sortPoints(withBoundaries).reduce((acc, point) => {
+                const existingIndex = acc.findIndex((entry) => entry.week === point.week);
+                if (existingIndex === -1) {
+                    acc.push(point);
+                    return acc;
+                }
+
+                const existing = acc[existingIndex];
+                if (existing.fixed && !point.fixed) {
+                    return acc;
+                }
+                if (!existing.fixed && point.fixed) {
+                    acc[existingIndex] = point;
+                    return acc;
+                }
+
+                acc[existingIndex] = point;
+                return acc;
+            }, [] as LanePoint[]);
+        },
+        [ensureBoundaryPoints]
+    );
+
     const emitPointsChange = useCallback(
         (mutator: (current: LanePoint[]) => LanePoint[]) => {
             if (!canEdit || !onPointsChange) {
                 return;
             }
             const current = pointsRef.current;
-            const next = sortPoints(mutator(current)).map((point) => ({
-                ...point,
-                hours: clamp(point.hours, 0, maxHours),
-            }));
-            onPointsChange(next);
+            const mutated = mutator(current);
+            const normalized = normalizePoints(mutated);
+            const currentNormalized = normalizePoints(current);
+            if (pointsAreEqual(currentNormalized, normalized)) {
+                pointsRef.current = currentNormalized;
+                return;
+            }
+            pointsRef.current = normalized;
+            onPointsChange(normalized);
         },
-        [canEdit, onPointsChange, maxHours]
+        [canEdit, normalizePoints, onPointsChange]
     );
 
     const updateHoverInfo = useCallback(

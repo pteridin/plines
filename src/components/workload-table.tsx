@@ -68,6 +68,9 @@ const sortPoints = (points: LanePoint[]) =>
 
 const clonePoints = (points: LanePoint[]) => points.map((point) => ({ ...point }));
 
+const clampWeekToIsoRange = (week: number, maxWeeks: number) =>
+    clamp(Math.round(week), 1, Math.max(1, maxWeeks));
+
 const projectLabelFor = (
     catalog: ProjectSummary[],
     projectId: string,
@@ -137,6 +140,76 @@ const valueAtAbsoluteWeek = (
     return value;
 };
 
+const ensureYearBoundaryPoints = ({
+    points,
+    laneId,
+    year,
+    weeksInYear,
+    startHours,
+    endHours,
+}: {
+    points: LanePoint[];
+    laneId: string;
+    year: number;
+    weeksInYear: number;
+    startHours: number;
+    endHours: number;
+}) => {
+    const normalized = sortPoints(
+        points.map((point) => {
+            const normalizedWeek = clampWeekToIsoRange(point.week ?? 1, weeksInYear);
+            return {
+                ...point,
+                week: normalizedWeek,
+                year: point.year ?? year,
+            };
+        })
+    );
+
+    const startId = `__boundary-${laneId}-${year}-start`;
+    const endId = `__boundary-${laneId}-${year}-end`;
+
+    const startPoint: LanePoint = {
+        id: startId,
+        week: 1,
+        hours: startHours,
+        fixed: true,
+        year,
+    };
+
+    const endPoint: LanePoint = {
+        id: endId,
+        week: weeksInYear,
+        hours: endHours,
+        fixed: true,
+        year,
+    };
+
+    const combined = [startPoint, ...normalized, endPoint];
+
+    const uniqueByWeek = combined.reduce((acc, point) => {
+        const existingIndex = acc.findIndex((entry) => entry.week === point.week);
+        if (existingIndex === -1) {
+            acc.push(point);
+            return acc;
+        }
+
+        const existing = acc[existingIndex];
+        if (existing.fixed && !point.fixed) {
+            return acc;
+        }
+        if (!existing.fixed && point.fixed) {
+            acc[existingIndex] = point;
+            return acc;
+        }
+
+        acc[existingIndex] = point;
+        return acc;
+    }, [] as LanePoint[]);
+
+    return sortPoints(uniqueByWeek);
+};
+
 function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: WorkloadTableProps) {
     const todayInfo = useMemo(() => getISOWeekInfo(new Date()), []);
     const [displayYear, setDisplayYear] = useState(todayInfo.year);
@@ -183,7 +256,11 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                 }
 
                 const lanes = new Map<string, ProjectLaneState>();
-                const ingest = (records: typeof currentData, year: number) => {
+                const ingest = (
+                    records: typeof currentData,
+                    year: number,
+                    weeksInYear: number
+                ) => {
                     records.forEach((record) => {
                         const existing = lanes.get(record.projectId) ?? {
                             id: record.projectId,
@@ -199,6 +276,7 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                         existing.pointsByYear[year] = sortPoints(
                             record.points.map((point) => ({
                                 ...point,
+                                week: clampWeekToIsoRange(point.week ?? 1, weeksInYear),
                                 year,
                                 absoluteWeek: point.absoluteWeek ?? point.week,
                             }))
@@ -207,9 +285,9 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                     });
                 };
 
-                ingest(prevData, displayYear - 1);
-                ingest(currentData, displayYear);
-                ingest(nextData, displayYear + 1);
+                ingest(prevData, displayYear - 1, prevYearWeeks);
+                ingest(currentData, displayYear, currentYearWeeks);
+                ingest(nextData, displayYear + 1, nextYearWeeks);
 
                 setProjectLanes(Array.from(lanes.values()));
             } catch (error) {
@@ -228,16 +306,18 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
         return () => {
             cancelled = true;
         };
-    }, [userId, displayYear, projectsCatalog]);
+    }, [userId, displayYear, projectsCatalog, prevYearWeeks, currentYearWeeks, nextYearWeeks]);
 
     const goToPreviousYear = useCallback(() => setDisplayYear((year) => year - 1), []);
     const goToNextYear = useCallback(() => setDisplayYear((year) => year + 1), []);
 
     const handleLaneChange = useCallback(
         (laneId: string, year: number, nextPoints: LanePoint[]) => {
+            const weeksInYear = getISOWeeksInYear(year);
             const normalizedPoints = sortPoints(
                 nextPoints.map((point) => ({
                     ...point,
+                    week: clampWeekToIsoRange(point.week ?? 1, weeksInYear),
                     year,
                 }))
             );
@@ -309,23 +389,33 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
         setIsSaving(true);
         setErrorMessage(null);
 
-        const startWeek = Math.max(1, todayInfo.week - 2);
-        const endWeek = clamp(todayInfo.week + 2, startWeek + 1, currentYearWeeks);
+        const startWeek = 1;
+        const endWeek = clampWeekToIsoRange(currentYearWeeks, currentYearWeeks);
 
-        const defaultPoints: LanePoint[] = [
-            {
-                id: `${selectedProjectId}-${displayYear}-start`,
-                week: startWeek,
-                hours: 0,
-                year: displayYear,
-            },
-            {
-                id: `${selectedProjectId}-${displayYear}-end`,
-                week: endWeek,
-                hours: 0,
-                year: displayYear,
-            },
-        ];
+        const defaultPoints: LanePoint[] =
+            startWeek === endWeek
+                ? [
+                      {
+                          id: `${selectedProjectId}-${displayYear}-week-${startWeek}`,
+                          week: startWeek,
+                          hours: 0,
+                          year: displayYear,
+                      },
+                  ]
+                : [
+                      {
+                          id: `${selectedProjectId}-${displayYear}-start`,
+                          week: startWeek,
+                          hours: 0,
+                          year: displayYear,
+                      },
+                      {
+                          id: `${selectedProjectId}-${displayYear}-end`,
+                          week: endWeek,
+                          hours: 0,
+                          year: displayYear,
+                      },
+                  ];
 
         try {
             const updated = await updateWorkload(userId, selectedProjectId, displayYear, defaultPoints);
@@ -375,7 +465,6 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
         }
     }, [
         selectedProjectId,
-        todayInfo.week,
         currentYearWeeks,
         userId,
         displayYear,
@@ -411,15 +500,22 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                 nextYearWeeks
             );
 
-            const startValue = valueAtAbsoluteWeek(absolutePoints, 0);
-            const endValue = valueAtAbsoluteWeek(absolutePoints, currentYearWeeks);
+            const startValueRaw = valueAtAbsoluteWeek(absolutePoints, 1);
+            const endValueRaw = valueAtAbsoluteWeek(absolutePoints, currentYearWeeks);
+            const startValue = clamp(startValueRaw, 0, maxHours);
+            const endValue = clamp(endValueRaw, 0, maxHours);
 
-            const actualPoints = sortPoints(
-                (lane.pointsByYear[displayYear] ?? []).map((point) => ({
+            const actualPoints = ensureYearBoundaryPoints({
+                points: (lane.pointsByYear[displayYear] ?? []).map((point) => ({
                     ...point,
                     hours: clamp(point.hours, 0, maxHours),
-                }))
-            );
+                })),
+                laneId: lane.id,
+                year: displayYear,
+                weeksInYear: currentYearWeeks,
+                startHours: startValue,
+                endHours: endValue,
+            });
 
             return {
                 lane,
@@ -448,28 +544,16 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
 
         const weeklyTotals = Array(currentYearWeeks + 1).fill(0) as number[];
 
-        preparedLanes.forEach(({ lane, actualPoints, startValue, endValue }) => {
+        preparedLanes.forEach(({ lane, actualPoints }) => {
             if (!lane.active) {
                 return;
             }
-            const timeline = sortPoints([
-                {
-                    id: "__lane-start",
-                    week: 0,
-                    hours: clamp(startValue, 0, maxHours),
-                    fixed: true,
-                },
-                ...actualPoints.map((point) => ({
+            const timeline = sortPoints(
+                actualPoints.map((point) => ({
                     ...point,
                     hours: clamp(point.hours, 0, maxHours),
-                })),
-                {
-                    id: "__lane-end",
-                    week: currentYearWeeks,
-                    hours: clamp(endValue, 0, maxHours),
-                    fixed: true,
-                },
-            ]);
+                }))
+            );
 
             if (timeline.length === 0) {
                 return;
@@ -478,7 +562,7 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
             let timelineIndex = 0;
             let lastPoint = timeline[0];
 
-            for (let week = 0; week <= currentYearWeeks; week += 1) {
+            for (let week = 1; week <= currentYearWeeks; week += 1) {
                 while (timelineIndex < timeline.length && timeline[timelineIndex]!.week <= week) {
                     lastPoint = timeline[timelineIndex]!;
                     timelineIndex += 1;
@@ -488,12 +572,13 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
         });
 
         const clampedTotals = weeklyTotals.map((value) => clamp(value, 0, maxHours));
-        const peakHours = Math.max(...clampedTotals, 0);
+        const relevantTotals = clampedTotals.slice(1);
+        const peakHours = relevantTotals.length > 0 ? Math.max(...relevantTotals, 0) : 0;
         const peakPercent = peakHours === 0 ? 0 : Math.round((peakHours / maxHours) * 100);
 
-        const sumPoints: LanePoint[] = clampedTotals.map((hours, week) => ({
-            id: `sum-${week}`,
-            week,
+        const sumPoints: LanePoint[] = relevantTotals.map((hours, index) => ({
+            id: `sum-${index + 1}`,
+            week: index + 1,
             hours,
             fixed: true,
             year: displayYear,
