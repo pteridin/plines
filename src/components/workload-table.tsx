@@ -27,6 +27,13 @@ type ProjectSummary = {
     active: boolean;
 };
 
+type PreparedLane = {
+    lane: ProjectLaneState;
+    actualPoints: LanePoint[];
+    startValue: number;
+    endValue: number;
+};
+
 type WorkloadTableProps = {
     employeeName: string;
     userId: string;
@@ -287,6 +294,18 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
             return;
         }
 
+        if (isLoading) {
+            setErrorMessage("Workload data is still loading. Please wait a moment.");
+            return;
+        }
+
+        const existingLane = projectLanes.find((lane) => lane.id === selectedProjectId);
+        const existingCurrentYearPoints = existingLane?.pointsByYear[displayYear] ?? [];
+        if (existingCurrentYearPoints.length > 0) {
+            setErrorMessage("This project already has workload for the selected year.");
+            return;
+        }
+
         setIsSaving(true);
         setErrorMessage(null);
 
@@ -354,7 +373,16 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
         } finally {
             setIsSaving(false);
         }
-    }, [selectedProjectId, todayInfo.week, currentYearWeeks, userId, displayYear, projectsCatalog]);
+    }, [
+        selectedProjectId,
+        todayInfo.week,
+        currentYearWeeks,
+        userId,
+        displayYear,
+        projectsCatalog,
+        projectLanes,
+        isLoading,
+    ]);
 
     const lanesForDisplay = useMemo(() => {
         if (projectLanes.length === 0) {
@@ -373,8 +401,44 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
 
     const maxHours = (weeklyCapacityHours * 120) / 100;
 
+    const preparedLanes = useMemo<PreparedLane[]>(() => {
+        return lanesForDisplay.map((lane) => {
+            const absolutePoints = collectAbsolutePoints(
+                lane,
+                displayYear,
+                prevYearWeeks,
+                currentYearWeeks,
+                nextYearWeeks
+            );
+
+            const startValue = valueAtAbsoluteWeek(absolutePoints, 0);
+            const endValue = valueAtAbsoluteWeek(absolutePoints, currentYearWeeks);
+
+            const actualPoints = sortPoints(
+                (lane.pointsByYear[displayYear] ?? []).map((point) => ({
+                    ...point,
+                    hours: clamp(point.hours, 0, maxHours),
+                }))
+            );
+
+            return {
+                lane,
+                actualPoints,
+                startValue,
+                endValue,
+            };
+        });
+    }, [
+        lanesForDisplay,
+        displayYear,
+        prevYearWeeks,
+        currentYearWeeks,
+        nextYearWeeks,
+        maxHours,
+    ]);
+
     const summary = useMemo(() => {
-        if (lanesForDisplay.length === 0) {
+        if (preparedLanes.length === 0) {
             return {
                 sumPoints: [] as LanePoint[],
                 peakHours: 0,
@@ -384,20 +448,42 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
 
         const weeklyTotals = Array(currentYearWeeks + 1).fill(0) as number[];
 
-        lanesForDisplay.forEach((lane) => {
-            const absolutePoints = collectAbsolutePoints(
-                lane,
-                displayYear,
-                prevYearWeeks,
-                currentYearWeeks,
-                nextYearWeeks
-            );
-            if (absolutePoints.length === 0) {
+        preparedLanes.forEach(({ lane, actualPoints, startValue, endValue }) => {
+            if (!lane.active) {
+                return;
+            }
+            const timeline = sortPoints([
+                {
+                    id: "__lane-start",
+                    week: 0,
+                    hours: clamp(startValue, 0, maxHours),
+                    fixed: true,
+                },
+                ...actualPoints.map((point) => ({
+                    ...point,
+                    hours: clamp(point.hours, 0, maxHours),
+                })),
+                {
+                    id: "__lane-end",
+                    week: currentYearWeeks,
+                    hours: clamp(endValue, 0, maxHours),
+                    fixed: true,
+                },
+            ]);
+
+            if (timeline.length === 0) {
                 return;
             }
 
+            let timelineIndex = 0;
+            let lastPoint = timeline[0];
+
             for (let week = 0; week <= currentYearWeeks; week += 1) {
-                weeklyTotals[week] += valueAtAbsoluteWeek(absolutePoints, week);
+                while (timelineIndex < timeline.length && timeline[timelineIndex]!.week <= week) {
+                    lastPoint = timeline[timelineIndex]!;
+                    timelineIndex += 1;
+                }
+                weeklyTotals[week] += clamp(lastPoint.hours, 0, maxHours);
             }
         });
 
@@ -418,28 +504,10 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
             peakHours,
             peakPercent,
         };
-    }, [lanesForDisplay, displayYear, prevYearWeeks, currentYearWeeks, nextYearWeeks, maxHours]);
+    }, [preparedLanes, currentYearWeeks, displayYear, maxHours]);
 
     const renderLane = useCallback(
-        (lane: ProjectLaneState) => {
-            const absolutePoints = collectAbsolutePoints(
-                lane,
-                displayYear,
-                prevYearWeeks,
-                currentYearWeeks,
-                nextYearWeeks
-            );
-
-            const startValue = valueAtAbsoluteWeek(absolutePoints, 0);
-            const endValue = valueAtAbsoluteWeek(absolutePoints, currentYearWeeks);
-
-            const actualPoints = sortPoints(
-                clonePoints(lane.pointsByYear[displayYear] ?? []).map((point) => ({
-                    ...point,
-                    hours: clamp(point.hours, 0, maxHours),
-                }))
-            );
-
+        ({ lane, actualPoints, startValue, endValue }: PreparedLane) => {
             const handlePointsChange = (next: LanePoint[]) => {
                 const actualNext = next.filter((point) => !point.fixed);
                 handleLaneChange(lane.id, displayYear, actualNext);
@@ -463,14 +531,11 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
             );
         },
         [
-            displayYear,
             activeWeekPosition,
-            weeklyCapacityHours,
             currentYearWeeks,
-            prevYearWeeks,
-            nextYearWeeks,
-            maxHours,
+            displayYear,
             handleLaneChange,
+            weeklyCapacityHours,
         ]
     );
 
@@ -529,7 +594,7 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                     </Select>
                     <Button
                         onClick={handleAddProject}
-                        disabled={!selectedProjectId || isSaving}
+                        disabled={!selectedProjectId || isSaving || isLoading}
                         className="bg-slate-100 text-slate-900 hover:bg-white/80"
                     >
                         Add
@@ -554,7 +619,7 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                         No workload recorded around {displayYear}.
                     </div>
                 ) : (
-                    lanesForDisplay.map((lane) => renderLane(lane))
+                    preparedLanes.map((entry) => renderLane(entry))
                 )}
 
                 {!isLoading && summary.sumPoints.length > 0 && (
@@ -576,8 +641,8 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
             </div>
 
             <p className="text-xs text-slate-400">
-                Double-click a lane to focus it, then use Alt + double-click to add or remove control points, or
-                Alt + drag points to fine-tune workload in 0.5h steps. The total workload lane aggregates every
+                Double-click a lane to focus it, Alt + click the lane to add control points, Alt + click a point to
+                remove it, and drag points to fine-tune workload in 0.5h steps. The total workload lane aggregates every
                 project across the year.
             </p>
         </div>
