@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
     Select,
@@ -7,20 +8,22 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select";
-import { fetchProjects, fetchWorkload, updateWorkload } from "../api/workloadApi";
+import {
+    fetchProjects,
+    fetchWorkload,
+    updateWorkload,
+    type ProjectSummary,
+    type ProjectStatus,
+} from "../api/workloadApi";
+import { ProjectStatusBadge } from "@/components/project-status-badge";
 import { Lane, type LanePoint } from "./elements/lane";
 
 type ProjectLaneState = {
     id: string;
     name: string;
     active: boolean;
+    status: ProjectStatus;
     points: LanePoint[];
-};
-
-type ProjectSummary = {
-    id: string;
-    name: string;
-    active: boolean;
 };
 
 type WorkloadTableProps = {
@@ -69,12 +72,15 @@ const projectLabelFor = (
 
 function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: WorkloadTableProps) {
     const todayInfo = useMemo(() => getISOWeekInfo(new Date()), []);
-    const displayYear = todayInfo.year;
+    const [displayYear, setDisplayYear] = useState(() => todayInfo.year);
     const currentYearWeeks = useMemo(() => getISOWeeksInYear(displayYear), [displayYear]);
     const activeWeekPosition = useMemo(() => {
+        if (displayYear !== todayInfo.year) {
+            return null;
+        }
         const fractional = todayInfo.week + (todayInfo.weekday - 1) / 7;
         return clamp(fractional, 0, currentYearWeeks);
-    }, [todayInfo, currentYearWeeks]);
+    }, [todayInfo, currentYearWeeks, displayYear]);
 
     const [projectLanes, setProjectLanes] = useState<ProjectLaneState[]>([]);
     const [projectsCatalog, setProjectsCatalog] = useState<ProjectSummary[]>([]);
@@ -82,6 +88,14 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
     const [isLoading, setIsLoading] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+    const handleYearStep = useCallback((delta: number) => {
+        setDisplayYear((prev) => prev + delta);
+    }, []);
+
+    useEffect(() => {
+        setDisplayYear(todayInfo.year);
+    }, [userId, todayInfo.year]);
 
     useEffect(() => {
         void (async () => {
@@ -99,20 +113,22 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                 const data = await fetchWorkload(userId, displayYear);
                 if (cancelled) return;
 
-                const lanes = data.map((record) => ({
-                    id: record.projectId,
-                    name: projectLabelFor(projectsCatalog, record.projectId, record.name),
-                    active:
-                        projectsCatalog.find((p) => p.id === record.projectId)?.active ??
-                        record.active,
-                    points: sortPoints(
-                        record.points.map((point) => ({
-                            ...point,
-                            week: clampWeekToIsoRange(point.week ?? 1, currentYearWeeks),
-                            year: displayYear,
-                        }))
-                    ),
-                }));
+                const lanes = data.map((record) => {
+                    const meta = projectsCatalog.find((p) => p.id === record.projectId);
+                    return {
+                        id: record.projectId,
+                        name: projectLabelFor(projectsCatalog, record.projectId, record.name),
+                        active: meta?.active ?? record.active,
+                        status: meta?.status ?? record.status,
+                        points: sortPoints(
+                            record.points.map((point) => ({
+                                ...point,
+                                week: clampWeekToIsoRange(point.week ?? 1, currentYearWeeks),
+                                year: displayYear,
+                            }))
+                        ),
+                    };
+                });
 
                 setProjectLanes(lanes);
             } catch {
@@ -144,11 +160,31 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                 )
             );
 
-            void updateWorkload(userId, laneId, displayYear, normalizedPoints).catch(() => {
-                setErrorMessage("Saving changes failed. Please retry.");
-            });
+            void updateWorkload(userId, laneId, displayYear, normalizedPoints)
+                .then((updated) => {
+                    const meta = projectsCatalog.find((p) => p.id === updated.projectId);
+                    setProjectLanes((prev) =>
+                        prev.map((lane) =>
+                            lane.id === updated.projectId
+                                ? {
+                                      ...lane,
+                                      name: projectLabelFor(
+                                          projectsCatalog,
+                                          updated.projectId,
+                                          updated.name
+                                      ),
+                                      active: meta?.active ?? updated.active,
+                                      status: meta?.status ?? updated.status,
+                                  }
+                                : lane
+                        )
+                    );
+                })
+                .catch(() => {
+                    setErrorMessage("Saving changes failed. Please retry.");
+                });
         },
-        [userId, displayYear, currentYearWeeks]
+        [userId, displayYear, currentYearWeeks, projectsCatalog]
     );
 
     const selectableProjects = useMemo(() => {
@@ -188,8 +224,16 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
         try {
             const updated = await updateWorkload(userId, selectedProjectId, displayYear, defaultPoints);
             const label = projectLabelFor(projectsCatalog, updated.projectId, updated.name);
-            const activeFlag =
-                projectsCatalog.find((p) => p.id === updated.projectId)?.active ?? updated.active;
+            const meta = projectsCatalog.find((p) => p.id === updated.projectId);
+            const activeFlag = meta?.active ?? updated.active;
+            const statusFlag = meta?.status ?? updated.status;
+            const normalizedPoints = sortPoints(
+                updated.points.map((point) => ({
+                    ...point,
+                    week: clampWeekToIsoRange(point.week ?? 1, currentYearWeeks),
+                    year: displayYear,
+                }))
+            );
 
             setProjectLanes((prev) => [
                 ...prev,
@@ -197,7 +241,8 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                     id: updated.projectId,
                     name: label,
                     active: activeFlag,
-                    points: sortPoints(updated.points),
+                    status: statusFlag,
+                    points: normalizedPoints,
                 },
             ]);
         } catch {
@@ -247,20 +292,52 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
 
     return (
         <div className="workload-table w-full space-y-5 text-white">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                 <div>
                     <h2 className="text-xl font-semibold">{employeeName}</h2>
                     <p className="text-xs text-slate-300">
                         Weekly capacity: {weeklyCapacityHours}h (120% ceiling: {maxHours.toFixed(1)}h)
                     </p>
                 </div>
-                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
-                    <span className="text-sm font-semibold text-white">{displayYear}</span>
-                    <span>Weeks: {currentYearWeeks}</span>
-                    <span>Projects: {projectLanes.length}</span>
-                    <span>
-                        Peak load: {summary.peakHours.toFixed(1)}h ({summary.peakPercent}%)
-                    </span>
+                <div className="flex flex-col items-start gap-2 text-xs text-slate-300 sm:items-end">
+                    <div className="flex items-center gap-2">
+                        <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => handleYearStep(-1)}
+                            aria-label="Show previous year"
+                            className="border border-slate-700/60 bg-slate-900/60 text-slate-200 hover:bg-slate-800/80"
+                        >
+                            <ChevronLeft className="size-4" />
+                        </Button>
+                        <span className="text-sm font-semibold text-white">{displayYear}</span>
+                        <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => handleYearStep(1)}
+                            aria-label="Show next year"
+                            className="border border-slate-700/60 bg-slate-900/60 text-slate-200 hover:bg-slate-800/80"
+                        >
+                            <ChevronRight className="size-4" />
+                        </Button>
+                        {displayYear !== todayInfo.year && (
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setDisplayYear(todayInfo.year)}
+                                className="border-slate-600/60 bg-slate-900/60 text-white hover:bg-slate-800/80"
+                            >
+                                Current year
+                            </Button>
+                        )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <span>Weeks: {currentYearWeeks}</span>
+                        <span>Projects: {projectLanes.length}</span>
+                        <span>
+                            Peak load: {summary.peakHours.toFixed(1)}h ({summary.peakPercent}%)
+                        </span>
+                    </div>
                 </div>
             </div>
 
@@ -307,7 +384,12 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                     projectLanes.map((lane) => (
                         <Lane
                             key={lane.id}
-                            description={lane.name}
+                            description={
+                                <div className="flex items-center gap-2">
+                                    <span>{lane.name}</span>
+                                    <ProjectStatusBadge status={lane.status} />
+                                </div>
+                            }
                             points={lane.points}
                             onPointsChange={(next) => handleLaneChange(lane.id, next)}
                             editable

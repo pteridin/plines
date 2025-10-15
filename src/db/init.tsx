@@ -13,6 +13,7 @@ type ProjectSeed = {
     name: string;
     description: string;
     active: boolean;
+    status: "backlog" | "started" | "finished" | "canceled";
 };
 
 type WorkloadSeed = {
@@ -53,30 +54,35 @@ const projectSeeds: ProjectSeed[] = [
         name: "Atlas Onboarding",
         description: "Implementation and rollout of the Atlas platform.",
         active: true,
+        status: "started",
     },
     {
         externalId: "lane-beacon",
         name: "Beacon Mobile",
         description: "Cross-platform mobile experience for Beacon.",
         active: true,
+        status: "started",
     },
     {
         externalId: "lane-chroma",
         name: "Chroma Support",
         description: "Ongoing customer support and maintenance for Chroma.",
         active: true,
+        status: "finished",
     },
     {
         externalId: "lane-legacy",
         name: "Legacy Maintenance",
         description: "Sustaining work for legacy systems.",
         active: false,
+        status: "canceled",
     },
     {
         externalId: "lane-orion",
         name: "Orion Research",
         description: "Exploratory research for the Orion initiative.",
         active: true,
+        status: "backlog",
     },
 ];
 
@@ -132,7 +138,8 @@ export async function sql_init() {
                 external_id VARCHAR(100) NOT NULL UNIQUE,
                 name VARCHAR(100) NOT NULL,
                 description TEXT,
-                active BOOLEAN DEFAULT TRUE
+                active BOOLEAN DEFAULT TRUE,
+                status VARCHAR(32) DEFAULT 'backlog'
             );
         `;
 
@@ -157,8 +164,8 @@ export async function sql_init() {
 
         for (const project of projectSeeds) {
             await tx`
-                INSERT INTO projects (external_id, name, description, active)
-                VALUES (${project.externalId}, ${project.name}, ${project.description}, ${project.active})
+                INSERT INTO projects (external_id, name, description, active, status)
+                VALUES (${project.externalId}, ${project.name}, ${project.description}, ${project.active}, ${project.status})
             `;
         }
 

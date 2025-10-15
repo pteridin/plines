@@ -1,9 +1,12 @@
 import type { LanePoint } from "../components/elements/lane";
 
+export type ProjectStatus = "backlog" | "started" | "finished" | "canceled";
+
 export type ProjectWorkloadRecord = {
     projectId: string;
     name: string;
     active: boolean;
+    status: ProjectStatus;
     points: LanePoint[];
 };
 
@@ -11,6 +14,8 @@ type ApiProject = {
     id: string;
     name: string;
     active: boolean;
+    description: string;
+    status: ProjectStatus;
 };
 
 type ApiWorkloadPoint = {
@@ -25,7 +30,24 @@ type ApiWorkloadRecord = {
     projectId: string;
     name: string;
     active: boolean;
+    status: ProjectStatus;
     points: ApiWorkloadPoint[];
+};
+
+export type ProjectSummary = {
+    id: string;
+    name: string;
+    active: boolean;
+    description: string;
+    status: ProjectStatus;
+};
+
+export type EmployeeSummary = {
+    id: string;
+    name: string;
+    position: string;
+    workHours: number;
+    active: boolean;
 };
 
 const jsonHeaders = {
@@ -51,7 +73,7 @@ const normalizePoint =
 
 export const fetchProjects = async (
     userId: string
-): Promise<Array<{ id: string; name: string; active: boolean }>> => {
+): Promise<ProjectSummary[]> => {
     void userId;
     const response = await fetch("/api/projects");
     const projects = await handleResponse<ApiProject[]>(response, "Fetching projects");
@@ -60,6 +82,8 @@ export const fetchProjects = async (
         id: project.id,
         name: project.name,
         active: project.active,
+        description: project.description,
+        status: project.status,
     }));
 };
 
@@ -81,6 +105,7 @@ export const fetchWorkload = async (
         projectId: record.projectId,
         name: record.name,
         active: record.active,
+        status: record.status,
         points: record.points.map(normalizePoint(record, year)),
     }));
 };
@@ -113,6 +138,83 @@ export const updateWorkload = async (
         projectId: record.projectId,
         name: record.name,
         active: record.active,
+        status: record.status,
         points: record.points.map(normalizePoint(record, year)),
     };
+};
+
+export const fetchEmployees = async (): Promise<EmployeeSummary[]> => {
+    const response = await fetch("/api/employees");
+    const employees = await handleResponse<EmployeeSummary[]>(response, "Fetching employees");
+
+    return employees.map((employee) => ({
+        ...employee,
+        position: employee.position ?? "",
+    }));
+};
+
+export const createEmployee = async (input: {
+    name: string;
+    position?: string;
+    workHours?: number;
+    active?: boolean;
+}): Promise<EmployeeSummary> => {
+    const response = await fetch("/api/employees", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({
+            name: input.name,
+            position: input.position ?? "",
+            workHours: input.workHours ?? 40,
+            active: input.active ?? true,
+        }),
+    });
+
+    return await handleResponse<EmployeeSummary>(response, "Creating employee");
+};
+
+export const updateEmployee = async (
+    employeeId: string,
+    updates: Partial<Pick<EmployeeSummary, "name" | "position" | "workHours" | "active">>
+): Promise<EmployeeSummary> => {
+    const response = await fetch(`/api/employees/${encodeURIComponent(employeeId)}`, {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify(updates),
+    });
+
+    return await handleResponse<EmployeeSummary>(response, "Updating employee");
+};
+
+export const createProject = async (input: {
+    name: string;
+    description?: string;
+    status?: ProjectStatus;
+    active?: boolean;
+}): Promise<ProjectSummary> => {
+    const response = await fetch("/api/projects", {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({
+            name: input.name,
+            description: input.description ?? "",
+            status: input.status ?? "backlog",
+            active: input.active ?? true,
+        }),
+    });
+
+    return await handleResponse<ProjectSummary>(response, "Creating project");
+};
+
+export const updateProject = async (
+    projectId: string,
+    updates: Partial<Pick<ProjectSummary, "name" | "description" | "status" | "active">>
+): Promise<ProjectSummary> => {
+    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+        method: "PUT",
+        headers: jsonHeaders,
+        body: JSON.stringify(updates),
+    });
+
+    return await handleResponse<ProjectSummary>(response, "Updating project");
 };

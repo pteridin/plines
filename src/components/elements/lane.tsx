@@ -8,6 +8,7 @@ import {
     type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
     type RefObject,
+    type ReactNode,
 } from "react";
 
 type ViewBox = {
@@ -46,7 +47,7 @@ type HoverInfo = {
 };
 
 export type LaneProps = {
-    description: string;
+    description: ReactNode;
     points: LanePoint[];
     onPointsChange?: (next: LanePoint[]) => void;
     editable?: boolean;
