@@ -1,5 +1,4 @@
 import "./index.css";
-
 import { WorkloadTable } from "./components/workload-table";
 
 export function App() {
