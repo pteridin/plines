@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
     Select,
     SelectContent,
@@ -91,6 +92,7 @@ function WorkloadTable({
     const [projectLanes, setProjectLanes] = useState<ProjectLaneState[]>([]);
     const [projectsCatalog, setProjectsCatalog] = useState<ProjectSummary[]>([]);
     const [selectedProjectId, setSelectedProjectId] = useState<string>("");
+    const [projectFilter, setProjectFilter] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -210,6 +212,12 @@ function WorkloadTable({
             (project) => project.active && !existing.has(project.id)
         );
     }, [projectLanes, projectsCatalog]);
+
+    const filteredProjectLanes = useMemo(() => {
+        const search = projectFilter.trim().toLowerCase();
+        if (search.length === 0) return projectLanes;
+        return projectLanes.filter((lane) => lane.name.toLowerCase().includes(search));
+    }, [projectLanes, projectFilter]);
 
     useEffect(() => {
         if (selectableProjects.length === 0) setSelectedProjectId("");
@@ -391,6 +399,12 @@ function WorkloadTable({
                             Project assignments are managed by project managers.
                         </p>
                     )}
+                    <Input
+                        value={projectFilter}
+                        onChange={(event) => setProjectFilter(event.target.value)}
+                        placeholder="Filter projects"
+                        className="w-full min-w-[200px] flex-1 border-slate-600/70 bg-slate-900/50 text-slate-100 sm:w-64"
+                    />
                 </div>
 
                 {errorMessage && (
@@ -405,8 +419,12 @@ function WorkloadTable({
                     <div className="text-sm text-slate-400">
                         No workload recorded for {displayYear}.
                     </div>
+                ) : filteredProjectLanes.length === 0 ? (
+                    <div className="text-sm text-slate-400">
+                        No projects match the current filter.
+                    </div>
                 ) : (
-                    projectLanes.map((lane) => (
+                    filteredProjectLanes.map((lane) => (
                         <Lane
                             key={lane.id}
                             description={
@@ -444,6 +462,10 @@ function WorkloadTable({
                         />
                     </div>
                 )}
+            </div>
+            <div className="text-xs text-slate-400">
+                <p>Add projects. Double-Click on a lane to enter edit mode. Add or remove points using Alt + Click. Drag the points to increase or decrease the workload.</p>
+                <p>The workload data is for planning purposes only and may not reflect actual hours worked.</p>
             </div>
         </div>
     );
