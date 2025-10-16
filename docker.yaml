@@ -39,5 +39,27 @@ services:
       - db_data:/var/lib/postgresql/data
     restart: unless-stopped
 
+  db-backup:
+    image: postgres:16-alpine
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-plines}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-plines123}
+      POSTGRES_DB: ${POSTGRES_DB:-plines}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-plines123}
+    volumes:
+      - ./backups:/backups
+    command: >
+      sh -c 'set -e;
+        while true; do
+          timestamp=$(date +%Y%m%d-%H%M%S);
+          pg_dump -h db -p 5432 -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -F c -f "/backups/$${POSTGRES_DB}-$${timestamp}.dump";
+          find /backups -type f -name "*.dump" -mtime +14 -delete;
+          sleep 86400;
+        done'
+    restart: unless-stopped
+
 volumes:
   db_data:
