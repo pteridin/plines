@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { ProjectStatusBadge } from "./project-status-badge";
+import type { AuthUser } from "@/api/authApi";
 
 type ActiveDraft = Record<string, string>;
 
@@ -39,9 +40,10 @@ const makeHoursDraft = (employees: EmployeeSummary[]): ActiveDraft =>
 
 type ManagementViewProps = {
     onDataChange?: () => void;
+    currentUser: AuthUser;
 };
 
-function ManagementView({ onDataChange }: ManagementViewProps) {
+function ManagementView({ onDataChange, currentUser }: ManagementViewProps) {
     const [employees, setEmployees] = useState<EmployeeSummary[]>([]);
     const [employeeHoursDraft, setEmployeeHoursDraft] = useState<ActiveDraft>({});
     const [employeesLoading, setEmployeesLoading] = useState(false);
@@ -56,8 +58,13 @@ function ManagementView({ onDataChange }: ManagementViewProps) {
     const [createEmployeeName, setCreateEmployeeName] = useState("");
     const [createEmployeePosition, setCreateEmployeePosition] = useState("");
     const [createEmployeeHours, setCreateEmployeeHours] = useState("40");
+    const [createEmployeeUsername, setCreateEmployeeUsername] = useState("");
+    const [createEmployeePassword, setCreateEmployeePassword] = useState("");
+    const [createEmployeeManager, setCreateEmployeeManager] = useState(false);
+    const [createEmployeeAdmin, setCreateEmployeeAdmin] = useState(false);
     const [isCreatingEmployee, setIsCreatingEmployee] = useState(false);
     const [createEmployeeError, setCreateEmployeeError] = useState<string | null>(null);
+    const [employeesNotice, setEmployeesNotice] = useState<string | null>(null);
 
     const [createProjectName, setCreateProjectName] = useState("");
     const [createProjectDescription, setCreateProjectDescription] = useState("");
@@ -68,6 +75,7 @@ function ManagementView({ onDataChange }: ManagementViewProps) {
     const loadEmployees = useCallback(async () => {
         setEmployeesLoading(true);
         setEmployeesError(null);
+        setEmployeesNotice(null);
         try {
             const data = await fetchEmployees();
             setEmployees(data);
@@ -102,10 +110,22 @@ function ManagementView({ onDataChange }: ManagementViewProps) {
             event.preventDefault();
             if (isCreatingEmployee) return;
             setCreateEmployeeError(null);
+            setEmployeesNotice(null);
 
             const trimmedName = createEmployeeName.trim();
             if (trimmedName.length === 0) {
                 setCreateEmployeeError("Employee name is required.");
+                return;
+            }
+
+            const trimmedUsername = createEmployeeUsername.trim();
+            if (trimmedUsername.length === 0) {
+                setCreateEmployeeError("Username is required.");
+                return;
+            }
+
+            if (createEmployeePassword.length < 6) {
+                setCreateEmployeeError("Password must be at least 6 characters.");
                 return;
             }
 
@@ -121,12 +141,21 @@ function ManagementView({ onDataChange }: ManagementViewProps) {
                     name: trimmedName,
                     position: createEmployeePosition.trim(),
                     workHours: Math.round(hoursNumber),
+                    username: trimmedUsername.toLowerCase(),
+                    password: createEmployeePassword,
+                    canManageWorkload: currentUser.isAdmin ? createEmployeeManager : false,
+                    isAdmin: currentUser.isAdmin ? createEmployeeAdmin : false,
                 });
                 setCreateEmployeeName("");
                 setCreateEmployeePosition("");
                 setCreateEmployeeHours("40");
+                setCreateEmployeeUsername("");
+                setCreateEmployeePassword("");
+                setCreateEmployeeManager(false);
+                setCreateEmployeeAdmin(false);
                 await loadEmployees();
                 onDataChange?.();
+                setEmployeesNotice(`${trimmedName} has been added.`);
             } catch {
                 setCreateEmployeeError("Could not create employee. Please try again.");
             } finally {
@@ -137,6 +166,11 @@ function ManagementView({ onDataChange }: ManagementViewProps) {
             createEmployeeHours,
             createEmployeeName,
             createEmployeePosition,
+            createEmployeePassword,
+            createEmployeeUsername,
+            createEmployeeManager,
+            createEmployeeAdmin,
+            currentUser.isAdmin,
             isCreatingEmployee,
             loadEmployees,
             onDataChange,
@@ -161,6 +195,7 @@ function ManagementView({ onDataChange }: ManagementViewProps) {
                 return;
             }
 
+            setEmployeesNotice(null);
             mutateEmployeePending(employee.id, true);
             try {
                 const updated = await updateEmployee(employee.id, {
@@ -174,6 +209,7 @@ function ManagementView({ onDataChange }: ManagementViewProps) {
                     [employee.id]: updated.workHours.toString(),
                 }));
                 onDataChange?.();
+                setEmployeesNotice(`${updated.name}'s capacity updated.`);
             } catch {
                 setEmployeesError("Failed to update employee hours. Please retry.");
             } finally {
@@ -185,6 +221,7 @@ function ManagementView({ onDataChange }: ManagementViewProps) {
 
     const handleToggleEmployeeActive = useCallback(
         async (employee: EmployeeSummary) => {
+            setEmployeesNotice(null);
             mutateEmployeePending(employee.id, true);
             try {
                 const updated = await updateEmployee(employee.id, {
@@ -194,6 +231,9 @@ function ManagementView({ onDataChange }: ManagementViewProps) {
                     prev.map((entry) => (entry.id === employee.id ? updated : entry))
                 );
                 onDataChange?.();
+                setEmployeesNotice(
+                    `${updated.name} is now ${updated.active ? "active" : "inactive"}.`
+                );
             } catch {
                 setEmployeesError("Failed to update employee state. Please retry.");
             } finally {
@@ -201,6 +241,89 @@ function ManagementView({ onDataChange }: ManagementViewProps) {
             }
         },
         [mutateEmployeePending, onDataChange]
+    );
+
+    const handleToggleManagerFlag = useCallback(
+        async (employee: EmployeeSummary) => {
+            if (!currentUser.isAdmin) return;
+            setEmployeesError(null);
+            setEmployeesNotice(null);
+            mutateEmployeePending(employee.id, true);
+            try {
+                const updated = await updateEmployee(employee.id, {
+                    canManageWorkload: !employee.canManageWorkload,
+                });
+                setEmployees((prev) =>
+                    prev.map((entry) => (entry.id === employee.id ? updated : entry))
+                );
+                setEmployeesNotice(
+                    `${updated.name} ${
+                        updated.canManageWorkload ? "granted project manager access." : "project manager access revoked."
+                    }`
+                );
+                onDataChange?.();
+            } catch {
+                setEmployeesError("Failed to update project manager access. Please retry.");
+            } finally {
+                mutateEmployeePending(employee.id, false);
+            }
+        },
+        [currentUser.isAdmin, mutateEmployeePending, onDataChange]
+    );
+
+    const handleToggleAdminFlag = useCallback(
+        async (employee: EmployeeSummary) => {
+            if (!currentUser.isAdmin) return;
+            setEmployeesError(null);
+            setEmployeesNotice(null);
+            mutateEmployeePending(employee.id, true);
+            try {
+                const updated = await updateEmployee(employee.id, {
+                    isAdmin: !employee.isAdmin,
+                });
+                setEmployees((prev) =>
+                    prev.map((entry) => (entry.id === employee.id ? updated : entry))
+                );
+                setEmployeesNotice(
+                    `${updated.name} ${updated.isAdmin ? "promoted to admin." : "admin access removed."}`
+                );
+                onDataChange?.();
+            } catch {
+                setEmployeesError("Failed to update admin access. Please retry.");
+            } finally {
+                mutateEmployeePending(employee.id, false);
+            }
+        },
+        [currentUser.isAdmin, mutateEmployeePending, onDataChange]
+    );
+
+    const handleResetEmployeePassword = useCallback(
+        async (employee: EmployeeSummary) => {
+            if (!currentUser.isAdmin) return;
+            const nextPassword = window.prompt(
+                `Enter a new password for ${employee.name}`,
+                ""
+            );
+            if (nextPassword === null) return;
+            const trimmed = nextPassword.trim();
+            if (trimmed.length < 6) {
+                setEmployeesError("Password must be at least 6 characters.");
+                return;
+            }
+
+            setEmployeesError(null);
+            setEmployeesNotice(null);
+            mutateEmployeePending(employee.id, true);
+            try {
+                await updateEmployee(employee.id, { password: trimmed });
+                setEmployeesNotice(`Password updated for ${employee.name}.`);
+            } catch {
+                setEmployeesError("Failed to reset password. Please retry.");
+            } finally {
+                mutateEmployeePending(employee.id, false);
+            }
+        },
+        [currentUser.isAdmin, mutateEmployeePending]
     );
 
     const mutateProjectPending = useCallback((id: string, enable: boolean) => {
@@ -311,7 +434,7 @@ function ManagementView({ onDataChange }: ManagementViewProps) {
 
                 <form
                     onSubmit={handleCreateEmployee}
-                    className="grid gap-3 rounded-lg border border-slate-700/60 bg-slate-900/50 p-4 sm:grid-cols-[1.3fr_1fr_0.6fr_auto]"
+                    className="grid gap-3 rounded-lg border border-slate-700/60 bg-slate-900/50 p-4 sm:grid-cols-2 lg:grid-cols-[1.2fr_1fr_0.6fr_0.8fr_auto]"
                 >
                     <Input
                         value={createEmployeeName}
@@ -333,17 +456,67 @@ function ManagementView({ onDataChange }: ManagementViewProps) {
                         placeholder="Hours"
                         className="bg-slate-900/60"
                     />
-                    <Button type="submit" disabled={isCreatingEmployee}>
+                    <Input
+                        value={createEmployeeUsername}
+                        onChange={(event) => setCreateEmployeeUsername(event.target.value)}
+                        placeholder="Username"
+                        className="bg-slate-900/60"
+                    />
+                    <Input
+                        type="password"
+                        value={createEmployeePassword}
+                        onChange={(event) => setCreateEmployeePassword(event.target.value)}
+                        placeholder="Temporary password"
+                        className="bg-slate-900/60 sm:col-span-2 lg:col-span-1"
+                    />
+                    <div className="flex flex-wrap items-center gap-4 sm:col-span-2 lg:col-span-4">
+                        <label className="flex items-center gap-2 text-xs text-slate-200">
+                            <input
+                                type="checkbox"
+                                className="h-4 w-4 rounded-sm border border-slate-500 bg-slate-900/80"
+                                checked={createEmployeeManager}
+                                onChange={(event) => setCreateEmployeeManager(event.target.checked)}
+                                disabled={!currentUser.isAdmin}
+                            />
+                            Project manager
+                        </label>
+                        <label className="flex items-center gap-2 text-xs text-slate-200">
+                            <input
+                                type="checkbox"
+                                className="h-4 w-4 rounded-sm border border-slate-500 bg-slate-900/80"
+                                checked={createEmployeeAdmin}
+                                onChange={(event) => setCreateEmployeeAdmin(event.target.checked)}
+                                disabled={!currentUser.isAdmin}
+                            />
+                            Admin
+                        </label>
+                        {!currentUser.isAdmin && (
+                            <span className="text-xs text-slate-400">
+                                Only administrators can assign manager or admin access.
+                            </span>
+                        )}
+                    </div>
+                    <Button
+                        type="submit"
+                        disabled={isCreatingEmployee}
+                        className="sm:col-span-2 lg:col-span-1 justify-self-start lg:justify-self-end"
+                    >
                         {isCreatingEmployee ? "Adding…" : "Add employee"}
                     </Button>
                     {createEmployeeError && (
-                        <div className="sm:col-span-4 text-sm text-red-300">{createEmployeeError}</div>
+                        <div className="sm:col-span-full text-sm text-red-300">{createEmployeeError}</div>
                     )}
                 </form>
 
                 {employeesError && (
                     <div className="rounded border border-red-600/60 bg-red-900/30 px-3 py-2 text-sm text-red-200">
                         {employeesError}
+                    </div>
+                )}
+
+                {employeesNotice && (
+                    <div className="rounded border border-emerald-600/60 bg-emerald-900/30 px-3 py-2 text-sm text-emerald-200">
+                        {employeesNotice}
                     </div>
                 )}
 
@@ -358,10 +531,10 @@ function ManagementView({ onDataChange }: ManagementViewProps) {
                             return (
                                 <div
                                     key={employee.id}
-                                    className="flex flex-col gap-3 rounded-lg border border-slate-700/60 bg-slate-900/60 p-4 sm:flex-row sm:items-center sm:justify-between"
+                                    className="flex flex-col gap-3 rounded-lg border border-slate-700/60 bg-slate-900/60 p-4 sm:flex-row sm:items-start sm:justify-between"
                                 >
-                                    <div className="space-y-1">
-                                        <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                                    <div className="space-y-2">
+                                        <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-white">
                                             {employee.name}
                                             <span
                                                 className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
@@ -372,44 +545,93 @@ function ManagementView({ onDataChange }: ManagementViewProps) {
                                             >
                                                 {employee.active ? "Active" : "Inactive"}
                                             </span>
+                                            {employee.canManageWorkload && (
+                                                <span className="rounded-full bg-blue-500/20 px-2 py-0.5 text-[10px] font-semibold text-blue-200">
+                                                    Project manager
+                                                </span>
+                                            )}
+                                            {employee.isAdmin && (
+                                                <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
+                                                    Admin
+                                                </span>
+                                            )}
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
+                                            <span>Username:</span>
+                                            <span className="font-semibold text-slate-200">@{employee.username}</span>
                                         </div>
                                         {employee.position && (
                                             <div className="text-xs text-slate-300">{employee.position}</div>
                                         )}
                                     </div>
-                                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                                        <div className="flex items-center gap-2">
-                                            <Input
-                                                type="number"
-                                                min={1}
-                                                value={employeeHoursDraft[employee.id] ?? ""}
-                                                onChange={(event) =>
-                                                    setEmployeeHoursDraft((prev) => ({
-                                                        ...prev,
-                                                        [employee.id]: event.target.value,
-                                                    }))
-                                                }
-                                                className="w-24 bg-slate-950/40"
-                                            />
+                                    <div className="flex flex-col gap-3 sm:items-end sm:text-right">
+                                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                                            <div className="flex items-center gap-2">
+                                                <Input
+                                                    type="number"
+                                                    min={1}
+                                                    value={employeeHoursDraft[employee.id] ?? ""}
+                                                    onChange={(event) =>
+                                                        setEmployeeHoursDraft((prev) => ({
+                                                            ...prev,
+                                                            [employee.id]: event.target.value,
+                                                        }))
+                                                    }
+                                                    className="w-24 bg-slate-950/40"
+                                                />
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => void handleSaveEmployeeHours(employee)}
+                                                    disabled={isPending}
+                                                    className="border-slate-600/70 bg-slate-900/60 text-white hover:bg-slate-800/70"
+                                                >
+                                                    Save hours
+                                                </Button>
+                                            </div>
                                             <Button
-                                                variant="outline"
+                                                variant={employee.active ? "ghost" : "secondary"}
                                                 size="sm"
-                                                onClick={() => void handleSaveEmployeeHours(employee)}
+                                                onClick={() => void handleToggleEmployeeActive(employee)}
                                                 disabled={isPending}
-                                                className="border-slate-600/70 bg-slate-900/60 text-white hover:bg-slate-800/70"
+                                                className="border border-transparent bg-slate-900/60 text-white hover:bg-slate-800/80"
                                             >
-                                                Save hours
+                                                {employee.active ? "Set inactive" : "Activate"}
                                             </Button>
                                         </div>
-                                        <Button
-                                            variant={employee.active ? "ghost" : "secondary"}
-                                            size="sm"
-                                            onClick={() => void handleToggleEmployeeActive(employee)}
-                                            disabled={isPending}
-                                            className="border border-transparent bg-slate-900/60 text-white hover:bg-slate-800/80"
-                                        >
-                                            {employee.active ? "Set inactive" : "Activate"}
-                                        </Button>
+                                        {currentUser.isAdmin && (
+                                            <div className="flex flex-wrap justify-end gap-2">
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => void handleToggleManagerFlag(employee)}
+                                                    disabled={isPending}
+                                                    className="border-slate-600/70 bg-slate-900/60 text-white hover:bg-slate-800/70"
+                                                >
+                                                    {employee.canManageWorkload
+                                                        ? "Revoke manager"
+                                                        : "Make manager"}
+                                                </Button>
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => void handleToggleAdminFlag(employee)}
+                                                    disabled={isPending}
+                                                    className="border-slate-600/70 bg-slate-900/60 text-white hover:bg-slate-800/70"
+                                                >
+                                                    {employee.isAdmin ? "Revoke admin" : "Make admin"}
+                                                </Button>
+                                                <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={() => void handleResetEmployeePassword(employee)}
+                                                    disabled={isPending}
+                                                    className="border border-transparent bg-slate-900/60 text-white hover:bg-slate-800/70"
+                                                >
+                                                    Reset password
+                                                </Button>
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             );

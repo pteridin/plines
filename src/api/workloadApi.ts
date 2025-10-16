@@ -48,6 +48,9 @@ export type EmployeeSummary = {
     position: string;
     workHours: number;
     active: boolean;
+    username: string;
+    canManageWorkload: boolean;
+    isAdmin: boolean;
 };
 
 const jsonHeaders = {
@@ -153,12 +156,18 @@ export const fetchEmployees = async (): Promise<EmployeeSummary[]> => {
     }));
 };
 
-export const createEmployee = async (input: {
+export type CreateEmployeeInput = {
     name: string;
     position?: string;
     workHours?: number;
     active?: boolean;
-}): Promise<EmployeeSummary> => {
+    username: string;
+    password: string;
+    canManageWorkload?: boolean;
+    isAdmin?: boolean;
+};
+
+export const createEmployee = async (input: CreateEmployeeInput): Promise<EmployeeSummary> => {
     const response = await fetch("/api/employees", {
         method: "POST",
         headers: jsonHeaders,
@@ -167,15 +176,26 @@ export const createEmployee = async (input: {
             position: input.position ?? "",
             workHours: input.workHours ?? 40,
             active: input.active ?? true,
+            username: input.username,
+            password: input.password,
+            canManageWorkload: input.canManageWorkload ?? false,
+            isAdmin: input.isAdmin ?? false,
         }),
     });
 
     return await handleResponse<EmployeeSummary>(response, "Creating employee");
 };
 
+export type UpdateEmployeeInput = Partial<
+    Pick<
+        EmployeeSummary,
+        "name" | "position" | "workHours" | "active" | "username" | "canManageWorkload" | "isAdmin"
+    >
+> & { password?: string };
+
 export const updateEmployee = async (
     employeeId: string,
-    updates: Partial<Pick<EmployeeSummary, "name" | "position" | "workHours" | "active">>
+    updates: UpdateEmployeeInput
 ): Promise<EmployeeSummary> => {
     const response = await fetch(`/api/employees/${encodeURIComponent(employeeId)}`, {
         method: "PUT",

@@ -6,6 +6,10 @@ type EmployeeSeed = {
     position: string;
     workHours: number;
     active: boolean;
+    username: string;
+    password: string;
+    canManageWorkload?: boolean;
+    isAdmin?: boolean;
 };
 
 type ProjectSeed = {
@@ -31,6 +35,9 @@ const employeeSeeds: EmployeeSeed[] = [
         position: "Delivery Lead",
         workHours: 40,
         active: true,
+        username: "jordan",
+        password: "password123",
+        canManageWorkload: true,
     },
     {
         externalId: "user-2",
@@ -38,6 +45,9 @@ const employeeSeeds: EmployeeSeed[] = [
         position: "Product Manager",
         workHours: 35,
         active: true,
+        username: "alice",
+        password: "password123",
+        canManageWorkload: true,
     },
     {
         externalId: "user-3",
@@ -45,6 +55,8 @@ const employeeSeeds: EmployeeSeed[] = [
         position: "Designer",
         workHours: 30,
         active: true,
+        username: "bob",
+        password: "password123",
     },
 ];
 
@@ -116,7 +128,15 @@ const workloadSeeds: WorkloadSeed[] = [
 export async function sql_init() {
     console.log("Initializing database schema and seeding data...");
 
+    const hashedEmployeeSeeds = await Promise.all(
+        employeeSeeds.map(async (seed) => ({
+            ...seed,
+            passwordHash: await Bun.password.hash(seed.password),
+        }))
+    );
+
     await sql.begin(async (tx) => {
+        await tx`DROP TABLE IF EXISTS sessions`;
         await tx`DROP TABLE IF EXISTS workloads`;
         await tx`DROP TABLE IF EXISTS projects`;
         await tx`DROP TABLE IF EXISTS employees`;
@@ -128,7 +148,11 @@ export async function sql_init() {
                 name VARCHAR(100) NOT NULL,
                 position VARCHAR(100),
                 work_hours INTEGER DEFAULT 40,
-                active BOOLEAN DEFAULT TRUE
+                active BOOLEAN DEFAULT TRUE,
+                username VARCHAR(100) NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                can_manage_workload BOOLEAN DEFAULT FALSE,
+                is_admin BOOLEAN DEFAULT FALSE
             );
         `;
 
@@ -144,6 +168,14 @@ export async function sql_init() {
         `;
 
         await tx`
+            CREATE TABLE IF NOT EXISTS sessions (
+                token TEXT PRIMARY KEY,
+                employee_id INTEGER REFERENCES employees(id) ON DELETE CASCADE,
+                expires_at INTEGER NOT NULL
+            );
+        `;
+
+        await tx`
             CREATE TABLE IF NOT EXISTS workloads (
                 id SERIAL PRIMARY KEY,
                 employee_id INTEGER REFERENCES employees(id) ON DELETE CASCADE,
@@ -155,10 +187,30 @@ export async function sql_init() {
             );
         `;
 
-        for (const employee of employeeSeeds) {
+        for (const employee of hashedEmployeeSeeds) {
             await tx`
-                INSERT INTO employees (external_id, name, position, work_hours, active)
-                VALUES (${employee.externalId}, ${employee.name}, ${employee.position}, ${employee.workHours}, ${employee.active})
+                INSERT INTO employees (
+                    external_id,
+                    name,
+                    position,
+                    work_hours,
+                    active,
+                    username,
+                    password_hash,
+                    can_manage_workload,
+                    is_admin
+                )
+                VALUES (
+                    ${employee.externalId},
+                    ${employee.name},
+                    ${employee.position},
+                    ${employee.workHours},
+                    ${employee.active},
+                    ${employee.username},
+                    ${employee.passwordHash},
+                    ${employee.canManageWorkload ?? false},
+                    ${employee.isAdmin ?? false}
+                )
             `;
         }
 

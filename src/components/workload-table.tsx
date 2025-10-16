@@ -30,6 +30,7 @@ type WorkloadTableProps = {
     employeeName: string;
     userId: string;
     weeklyCapacityHours?: number;
+    canEdit?: boolean;
 };
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
@@ -70,7 +71,12 @@ const projectLabelFor = (
     return projectId;
 };
 
-function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: WorkloadTableProps) {
+function WorkloadTable({
+    employeeName,
+    userId,
+    weeklyCapacityHours = 40,
+    canEdit = false,
+}: WorkloadTableProps) {
     const todayInfo = useMemo(() => getISOWeekInfo(new Date()), []);
     const [displayYear, setDisplayYear] = useState(() => todayInfo.year);
     const currentYearWeeks = useMemo(() => getISOWeeksInYear(displayYear), [displayYear]);
@@ -98,11 +104,21 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
     }, [userId, todayInfo.year]);
 
     useEffect(() => {
+        if (!canEdit) {
+            setProjectsCatalog([]);
+            setSelectedProjectId("");
+            return;
+        }
+
         void (async () => {
-            const projects = await fetchProjects(userId);
-            setProjectsCatalog(projects);
+            try {
+                const projects = await fetchProjects(userId);
+                setProjectsCatalog(projects);
+            } catch {
+                setProjectsCatalog([]);
+            }
         })();
-    }, [userId]);
+    }, [userId, canEdit]);
 
     useEffect(() => {
         let cancelled = false;
@@ -146,6 +162,7 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
 
     const handleLaneChange = useCallback(
         (laneId: string, nextPoints: LanePoint[]) => {
+            if (!canEdit) return;
             const normalizedPoints = sortPoints(
                 nextPoints.map((point) => ({
                     ...point,
@@ -184,7 +201,7 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                     setErrorMessage("Saving changes failed. Please retry.");
                 });
         },
-        [userId, displayYear, currentYearWeeks, projectsCatalog]
+        [userId, displayYear, currentYearWeeks, projectsCatalog, canEdit]
     );
 
     const selectableProjects = useMemo(() => {
@@ -205,7 +222,7 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
     }, [selectableProjects, selectedProjectId]);
 
     const handleAddProject = useCallback(async () => {
-        if (!selectedProjectId) return;
+        if (!canEdit || !selectedProjectId) return;
         if (isLoading) {
             setErrorMessage("Workload data is still loading. Please wait a moment.");
             return;
@@ -250,7 +267,7 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
         } finally {
             setIsSaving(false);
         }
-    }, [selectedProjectId, currentYearWeeks, userId, displayYear, projectsCatalog, isLoading]);
+    }, [selectedProjectId, currentYearWeeks, userId, displayYear, projectsCatalog, isLoading, canEdit]);
 
     const maxHours = (weeklyCapacityHours * 120) / 100;
 
@@ -343,29 +360,37 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
 
             <div className="flex flex-col gap-3 rounded-md border border-slate-700/60 bg-slate-900/40 p-3">
                 <div className="flex flex-wrap items-center gap-2">
-                    <Select
-                        value={selectedProjectId}
-                        onValueChange={setSelectedProjectId}
-                        disabled={selectableProjects.length === 0 || isSaving}
-                    >
-                        <SelectTrigger className="w-[200px] border-slate-600/70 bg-slate-800/50 text-left text-slate-100">
-                            <SelectValue placeholder="Add project" />
-                        </SelectTrigger>
-                        <SelectContent className="border-slate-600/70 bg-slate-800 text-slate-100">
-                            {selectableProjects.map((project) => (
-                                <SelectItem key={project.id} value={project.id}>
-                                    {project.name}
-                                </SelectItem>
-                            ))}
-                        </SelectContent>
-                    </Select>
-                    <Button
-                        onClick={handleAddProject}
-                        disabled={!selectedProjectId || isSaving || isLoading}
-                        className="bg-slate-100 text-slate-900 hover:bg-white/80"
-                    >
-                        Add
-                    </Button>
+                    {canEdit ? (
+                        <>
+                            <Select
+                                value={selectedProjectId}
+                                onValueChange={setSelectedProjectId}
+                                disabled={selectableProjects.length === 0 || isSaving}
+                            >
+                                <SelectTrigger className="w-[200px] border-slate-600/70 bg-slate-800/50 text-left text-slate-100">
+                                    <SelectValue placeholder="Add project" />
+                                </SelectTrigger>
+                                <SelectContent className="border-slate-600/70 bg-slate-800 text-slate-100">
+                                    {selectableProjects.map((project) => (
+                                        <SelectItem key={project.id} value={project.id}>
+                                            {project.name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                            <Button
+                                onClick={handleAddProject}
+                                disabled={!selectedProjectId || isSaving || isLoading}
+                                className="bg-slate-100 text-slate-900 hover:bg-white/80"
+                            >
+                                Add
+                            </Button>
+                        </>
+                    ) : (
+                        <p className="text-xs text-slate-400">
+                            Project assignments are managed by project managers.
+                        </p>
+                    )}
                 </div>
 
                 {errorMessage && (
@@ -391,8 +416,11 @@ function WorkloadTable({ employeeName, userId, weeklyCapacityHours = 40 }: Workl
                                 </div>
                             }
                             points={lane.points}
-                            onPointsChange={(next) => handleLaneChange(lane.id, next)}
-                            editable
+                            onPointsChange={(next) => {
+                                if (!canEdit) return;
+                                handleLaneChange(lane.id, next);
+                            }}
+                            editable={canEdit}
                             capacityHours={weeklyCapacityHours}
                             snapStepHours={0.5}
                             totalWeeks={currentYearWeeks}
