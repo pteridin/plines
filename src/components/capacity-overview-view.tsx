@@ -49,6 +49,9 @@ const normalizeCapacityPoints = (
     }));
 };
 
+const PLAN_STROKE_COLOR = "#00f5d4";
+const SUGGESTION_STROKE_COLOR = "#38c3a4";
+
 const filterEmployees = (
     employees: EmployeeCapacitySummary[],
     nameFilter: string,
@@ -244,10 +247,22 @@ export function CapacityOverviewView({
                     displayYear,
                     totalWeeks
                 );
+                const normalizedSuggestions = normalizeCapacityPoints(
+                    employee.suggestions ?? [],
+                    displayYear,
+                    totalWeeks
+                );
                 const weeklyTotals = normalizedPoints.map((point) => point.hours);
+                const suggestionTotals = normalizedSuggestions.map((point) => point.hours);
                 const peakHours = Math.max(...weeklyTotals, 0);
+                const suggestedPeakHours = Math.max(...suggestionTotals, 0);
                 const maxHours = (employee.workHours * 120) / 100;
                 const peakPercent = maxHours > 0 ? Math.round((peakHours / maxHours) * 100) : 0;
+                const suggestedPeakPercent =
+                    maxHours > 0 ? Math.round((suggestedPeakHours / maxHours) * 100) : 0;
+
+                const hasSuggestions = normalizedSuggestions.some((point) => point.hours > 0);
+
                 return (
                     <div
                         key={employee.id}
@@ -284,17 +299,30 @@ export function CapacityOverviewView({
                                 <span>
                                     Peak load: {peakHours.toFixed(1)}h ({peakPercent}% of 120%)
                                 </span>
+                                {hasSuggestions && (
+                                    <span>
+                                        Suggested peak: {suggestedPeakHours.toFixed(1)}h (
+                                        {suggestedPeakPercent}% of 120%)
+                                    </span>
+                                )}
                             </div>
                         </div>
                         <Lane
                             description="Total workload"
                             points={normalizedPoints}
+                            comparisonPoints={normalizedSuggestions}
                             editable={false}
                             capacityHours={employee.workHours}
                             showBands
                             totalWeeks={totalWeeks}
                             activeWeek={activeWeekPosition}
                             year={displayYear}
+                            primaryStroke={PLAN_STROKE_COLOR}
+                            comparisonStroke={
+                                hasSuggestions ? SUGGESTION_STROKE_COLOR : undefined
+                            }
+                            comparisonStrokeDasharray={hasSuggestions ? "6,4" : undefined}
+                            comparisonOpacity={0.65}
                         />
                     </div>
                 );

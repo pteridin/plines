@@ -264,6 +264,7 @@ function WorkloadView({ refreshSignal = 0, currentUser, isManager }: WorkloadVie
                     employeeName={`${selectedEmployee.name}${selectedEmployee.active ? "" : " (inactive)"}`}
                     weeklyCapacityHours={selectedEmployee.workHours}
                     canEdit={isManager}
+                    canSuggest={!isManager && selectedEmployee.id === currentUser.id}
                 />
             ) : isLoadingEmployees ? (
                 <div className="rounded-md border border-slate-700/60 bg-slate-900/40 px-4 py-6 text-sm text-slate-300">

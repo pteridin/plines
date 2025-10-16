@@ -131,6 +131,7 @@ const workloadSeeds: WorkloadSeed[] = [
 
 const dropTables = async (tx: typeof sql) => {
     await tx`DROP TABLE IF EXISTS sessions`;
+    await tx`DROP TABLE IF EXISTS workload_suggestions`;
     await tx`DROP TABLE IF EXISTS workloads`;
     await tx`DROP TABLE IF EXISTS projects`;
     await tx`DROP TABLE IF EXISTS employees`;
@@ -180,6 +181,20 @@ const createSchema = async (tx: typeof sql) => {
             week INTEGER NOT NULL,
             year INTEGER NOT NULL,
             hours FLOAT NOT NULL,
+            UNIQUE(employee_id, project_id, week, year)
+        );
+    `;
+
+    await tx`
+        CREATE TABLE IF NOT EXISTS workload_suggestions (
+            id SERIAL PRIMARY KEY,
+            employee_id INTEGER REFERENCES employees(id) ON DELETE CASCADE,
+            project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+            week INTEGER NOT NULL,
+            year INTEGER NOT NULL,
+            hours FLOAT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(employee_id, project_id, week, year)
         );
     `;

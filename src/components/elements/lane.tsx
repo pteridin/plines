@@ -61,6 +61,13 @@ export type LaneProps = {
     year?: number;
     startValue?: number;
     endValue?: number;
+    comparisonPoints?: LanePoint[];
+    comparisonStroke?: string;
+    comparisonStrokeDasharray?: string;
+    comparisonOpacity?: number;
+    primaryStroke?: string;
+    pointFill?: string;
+    pointStroke?: string;
 };
 
 const TOTAL_WEEKS = 52;
@@ -470,6 +477,8 @@ const LanePoints = ({
     onPointerDown,
     pointScale,
     editable,
+    fillColor,
+    strokeColor,
 }: {
     points: LanePoint[];
     weeks: number;
@@ -477,6 +486,8 @@ const LanePoints = ({
     onPointerDown: (event: ReactPointerEvent<SVGEllipseElement>, pointId: string) => void;
     pointScale: { scaleX: number; scaleY: number };
     editable: boolean;
+    fillColor: string;
+    strokeColor: string;
 }) => (
     <>
         {points
@@ -495,8 +506,8 @@ const LanePoints = ({
                         cy={cy}
                         rx={rx}
                         ry={ry}
-                        fill="#f72585"
-                        stroke="#ffe3ff"
+                        fill={fillColor}
+                        stroke={strokeColor}
                         strokeWidth={1}
                         vectorEffect="non-scaling-stroke"
                         onPointerDown={(event) => onPointerDown(event, point.id)}
@@ -564,6 +575,11 @@ const ZoomableLaneSvg = ({
     viewBox,
     weeks,
     stepPath,
+    primaryStroke,
+    comparisonPath,
+    comparisonStroke,
+    comparisonStrokeDasharray,
+    comparisonOpacity,
     activeWeek,
     showPoints,
     sortedPoints,
@@ -576,11 +592,18 @@ const ZoomableLaneSvg = ({
     onPointPointerDown,
     pointScale,
     editable,
+    pointFill,
+    pointStroke,
 }: {
     svgRef: RefObject<SVGSVGElement>;
     viewBox: ViewBox;
     weeks: number;
     stepPath: string;
+    primaryStroke: string;
+    comparisonPath?: string;
+    comparisonStroke?: string;
+    comparisonStrokeDasharray?: string;
+    comparisonOpacity?: number;
     activeWeek?: number | null;
     showPoints: boolean;
     sortedPoints: LanePoint[];
@@ -593,6 +616,8 @@ const ZoomableLaneSvg = ({
     onPointPointerDown: (event: ReactPointerEvent<SVGEllipseElement>, pointId: string) => void;
     pointScale: { scaleX: number; scaleY: number };
     editable: boolean;
+    pointFill: string;
+    pointStroke: string;
 }) => (
     <svg
         ref={svgRef}
@@ -615,9 +640,17 @@ const ZoomableLaneSvg = ({
             stroke="#193139"
             strokeWidth={1}
         />
-        {stepPath && (
-            <path d={stepPath} stroke="#00f5d4" strokeWidth={4} fill="none" />
+        {comparisonPath && (
+            <path
+                d={comparisonPath}
+                stroke={comparisonStroke ?? "#4acfac"}
+                strokeWidth={3}
+                strokeDasharray={comparisonStrokeDasharray}
+                fill="none"
+                opacity={comparisonOpacity ?? 0.8}
+            />
         )}
+        {stepPath && <path d={stepPath} stroke={primaryStroke} strokeWidth={4} fill="none" />}
         {typeof activeWeek === "number" &&
             Number.isFinite(activeWeek) &&
             activeWeek >= 0 &&
@@ -641,6 +674,8 @@ const ZoomableLaneSvg = ({
                 onPointerDown={onPointPointerDown}
                 pointScale={pointScale}
                 editable={editable}
+                fillColor={pointFill}
+                strokeColor={pointStroke}
             />
         )}
     </svg>
@@ -660,6 +695,13 @@ function Lane({
     year = new Date().getFullYear(),
     startValue,
     endValue,
+    comparisonPoints = [],
+    comparisonStroke = "#4acfac",
+    comparisonStrokeDasharray = "6,4",
+    comparisonOpacity = 0.8,
+    primaryStroke = "#00f5d4",
+    pointFill = "#f72585",
+    pointStroke = "#ffe3ff",
 }: LaneProps) {
     const svgRef = useRef<SVGSVGElement | null>(null);
     const pointsRef = useRef(points);
@@ -734,6 +776,16 @@ function Lane({
         boundaryEnd,
     } = useLaneMetrics({
         points,
+        weeks,
+        capacityHours,
+        maxLoadPercent,
+        snapStepHours,
+        startValue,
+        endValue,
+    });
+
+    const { stepPath: comparisonStepPath } = useLaneMetrics({
+        points: comparisonPoints,
         weeks,
         capacityHours,
         maxLoadPercent,
@@ -1112,6 +1164,11 @@ function Lane({
                     viewBox={viewBox}
                     weeks={weeks}
                     stepPath={stepPath}
+                    primaryStroke={primaryStroke}
+                    comparisonPath={comparisonStepPath}
+                    comparisonStroke={comparisonStroke}
+                    comparisonStrokeDasharray={comparisonStrokeDasharray}
+                    comparisonOpacity={comparisonOpacity}
                     activeWeek={activeWeek}
                     showPoints={isEditing}
                     sortedPoints={sortedPoints}
@@ -1124,6 +1181,8 @@ function Lane({
                     onPointPointerDown={handlePointPointerDown}
                     pointScale={pointScale}
                     editable={canEdit && isEditing}
+                    pointFill={pointFill}
+                    pointStroke={pointStroke}
                 />
                 <LaneTooltip hoverInfo={hoverInfo} />
             </div>

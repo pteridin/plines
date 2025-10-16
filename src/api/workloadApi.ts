@@ -8,6 +8,7 @@ export type ProjectWorkloadRecord = {
     active: boolean;
     status: ProjectStatus;
     points: LanePoint[];
+    suggestions: LanePoint[];
 };
 
 type ApiProject = {
@@ -32,6 +33,7 @@ type ApiWorkloadRecord = {
     active: boolean;
     status: ProjectStatus;
     points: ApiWorkloadPoint[];
+    suggestions?: ApiWorkloadPoint[];
 };
 
 export type ProjectSummary = {
@@ -62,6 +64,7 @@ export type EmployeeCapacitySummary = {
     active: boolean;
     tags: string[];
     points: LanePoint[];
+    suggestions: LanePoint[];
 };
 
 const jsonHeaders = {
@@ -121,6 +124,7 @@ export const fetchWorkload = async (
         active: record.active,
         status: record.status,
         points: record.points.map(normalizePoint(record, year)),
+        suggestions: (record.suggestions ?? []).map(normalizePoint(record, year)),
     }));
 };
 
@@ -154,6 +158,44 @@ export const updateWorkload = async (
         active: record.active,
         status: record.status,
         points: record.points.map(normalizePoint(record, year)),
+        suggestions: (record.suggestions ?? []).map(normalizePoint(record, year)),
+    };
+};
+
+export const updateWorkloadSuggestions = async (
+    userId: string,
+    projectId: string,
+    year: number,
+    points: LanePoint[]
+): Promise<ProjectWorkloadRecord> => {
+    const payload = {
+        points: points.map((point) => ({
+            week: point.week,
+            hours: point.hours,
+        })),
+    };
+
+    const response = await fetch(
+        `/api/workloads/${encodeURIComponent(userId)}/${encodeURIComponent(projectId)}/${encodeURIComponent(String(year))}/suggestions`,
+        {
+            method: "PUT",
+            headers: jsonHeaders,
+            body: JSON.stringify(payload),
+        }
+    );
+
+    const record = await handleResponse<ApiWorkloadRecord>(
+        response,
+        "Updating workload suggestions"
+    );
+
+    return {
+        projectId: record.projectId,
+        name: record.name,
+        active: record.active,
+        status: record.status,
+        points: record.points.map(normalizePoint(record, year)),
+        suggestions: (record.suggestions ?? []).map(normalizePoint(record, year)),
     };
 };
 
@@ -240,6 +282,13 @@ export const fetchCapacitySummary = async (
         position: entry.position ?? "",
         tags: Array.isArray(entry.tags) ? entry.tags : [],
         points: entry.points.map((point) => ({
+            ...point,
+            id: point.id,
+            week: point.week,
+            hours: point.hours,
+            year: point.year ?? payload.year,
+        })),
+        suggestions: (entry.suggestions ?? []).map((point) => ({
             ...point,
             id: point.id,
             week: point.week,

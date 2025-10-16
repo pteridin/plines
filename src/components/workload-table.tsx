@@ -13,11 +13,19 @@ import {
     fetchProjects,
     fetchWorkload,
     updateWorkload,
+    updateWorkloadSuggestions,
     type ProjectSummary,
     type ProjectStatus,
 } from "../api/workloadApi";
 import { ProjectStatusBadge } from "@/components/project-status-badge";
 import { Lane, type LanePoint } from "./elements/lane";
+
+const PLAN_STROKE_COLOR = "#00f5d4";
+const PLAN_POINT_FILL = "#f72585";
+const PLAN_POINT_STROKE = "#ffe3ff";
+const SUGGESTION_STROKE_COLOR = "#38c3a4";
+const SUGGESTION_POINT_FILL = "#2d9c8f";
+const SUGGESTION_POINT_STROKE = "#a3f0dc";
 
 type ProjectLaneState = {
     id: string;
@@ -25,6 +33,7 @@ type ProjectLaneState = {
     active: boolean;
     status: ProjectStatus;
     points: LanePoint[];
+    suggestions: LanePoint[];
 };
 
 type WorkloadTableProps = {
@@ -32,6 +41,7 @@ type WorkloadTableProps = {
     userId: string;
     weeklyCapacityHours?: number;
     canEdit?: boolean;
+    canSuggest?: boolean;
 };
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
@@ -77,6 +87,7 @@ function WorkloadTable({
     userId,
     weeklyCapacityHours = 40,
     canEdit = false,
+    canSuggest = false,
 }: WorkloadTableProps) {
     const todayInfo = useMemo(() => getISOWeekInfo(new Date()), []);
     const [displayYear, setDisplayYear] = useState(() => todayInfo.year);
@@ -145,6 +156,13 @@ function WorkloadTable({
                                 year: displayYear,
                             }))
                         ),
+                        suggestions: sortPoints(
+                            (record.suggestions ?? []).map((point) => ({
+                                ...point,
+                                week: clampWeekToIsoRange(point.week ?? 1, currentYearWeeks),
+                                year: displayYear,
+                            }))
+                        ),
                     };
                 });
 
@@ -194,6 +212,26 @@ function WorkloadTable({
                                       ),
                                       active: meta?.active ?? updated.active,
                                       status: meta?.status ?? updated.status,
+                                      points: sortPoints(
+                                          updated.points.map((point) => ({
+                                              ...point,
+                                              week: clampWeekToIsoRange(
+                                                  point.week ?? 1,
+                                                  currentYearWeeks
+                                              ),
+                                              year: displayYear,
+                                          }))
+                                      ),
+                                      suggestions: sortPoints(
+                                          (updated.suggestions ?? []).map((point) => ({
+                                              ...point,
+                                              week: clampWeekToIsoRange(
+                                                  point.week ?? 1,
+                                                  currentYearWeeks
+                                              ),
+                                              year: displayYear,
+                                          }))
+                                      ),
                                   }
                                 : lane
                         )
@@ -204,6 +242,78 @@ function WorkloadTable({
                 });
         },
         [userId, displayYear, currentYearWeeks, projectsCatalog, canEdit]
+    );
+
+    const handleSuggestionChange = useCallback(
+        (laneId: string, nextPoints: LanePoint[]) => {
+            if (!canSuggest) return;
+
+            const normalizedPoints = sortPoints(
+                nextPoints.map((point) => ({
+                    ...point,
+                    week: clampWeekToIsoRange(point.week ?? 1, currentYearWeeks),
+                    year: displayYear,
+                }))
+            );
+
+            setProjectLanes((prev) =>
+                prev.map((lane) =>
+                    lane.id === laneId
+                        ? { ...lane, suggestions: clonePoints(normalizedPoints) }
+                        : lane
+                )
+            );
+
+            setIsSaving(true);
+
+            void updateWorkloadSuggestions(userId, laneId, displayYear, normalizedPoints)
+                .then((updated) => {
+                    const meta = projectsCatalog.find((p) => p.id === updated.projectId);
+                    setProjectLanes((prev) =>
+                        prev.map((lane) =>
+                            lane.id === updated.projectId
+                                ? {
+                                      ...lane,
+                                      name: projectLabelFor(
+                                          projectsCatalog,
+                                          updated.projectId,
+                                          updated.name
+                                      ),
+                                      active: meta?.active ?? updated.active,
+                                      status: meta?.status ?? updated.status,
+                                      points: sortPoints(
+                                          updated.points.map((point) => ({
+                                              ...point,
+                                              week: clampWeekToIsoRange(
+                                                  point.week ?? 1,
+                                                  currentYearWeeks
+                                              ),
+                                              year: displayYear,
+                                          }))
+                                      ),
+                                      suggestions: sortPoints(
+                                          (updated.suggestions ?? []).map((point) => ({
+                                              ...point,
+                                              week: clampWeekToIsoRange(
+                                                  point.week ?? 1,
+                                                  currentYearWeeks
+                                              ),
+                                              year: displayYear,
+                                          }))
+                                      ),
+                                  }
+                                : lane
+                        )
+                    );
+                })
+                .catch(() => {
+                    setErrorMessage("Saving suggestion failed. Please retry.");
+                })
+                .finally(() => {
+                    setIsSaving(false);
+                });
+        },
+        [canSuggest, userId, displayYear, currentYearWeeks, projectsCatalog]
     );
 
     const selectableProjects = useMemo(() => {
@@ -259,6 +369,13 @@ function WorkloadTable({
                     year: displayYear,
                 }))
             );
+            const normalizedSuggestions = sortPoints(
+                (updated.suggestions ?? []).map((point) => ({
+                    ...point,
+                    week: clampWeekToIsoRange(point.week ?? 1, currentYearWeeks),
+                    year: displayYear,
+                }))
+            );
 
             setProjectLanes((prev) => [
                 ...prev,
@@ -268,6 +385,7 @@ function WorkloadTable({
                     active: activeFlag,
                     status: statusFlag,
                     points: normalizedPoints,
+                    suggestions: normalizedSuggestions,
                 },
             ]);
         } catch {
@@ -281,9 +399,9 @@ function WorkloadTable({
 
     const summary = useMemo(() => {
         const weeklyTotals = Array(currentYearWeeks + 1).fill(0) as number[];
+        const suggestionTotals = Array(currentYearWeeks + 1).fill(0) as number[];
 
-        projectLanes.forEach(({ active, points }) => {
-            if (!active) return;
+        const accumulate = (points: LanePoint[], bucket: number[]) => {
             const sorted = sortPoints(points);
             if (sorted.length === 0) return;
 
@@ -294,15 +412,23 @@ function WorkloadTable({
                     last = sorted[idx]!;
                     idx++;
                 }
-                if(weeklyTotals[week] === undefined) continue;
-                if(last === undefined) continue;
-                weeklyTotals[week] += clamp(last.hours, 0, maxHours);
+                if (!last || bucket[week] === undefined) continue;
+                bucket[week] += clamp(last.hours, 0, maxHours);
             }
+        };
+
+        projectLanes.forEach(({ active, points, suggestions }) => {
+            if (!active) return;
+            accumulate(points, weeklyTotals);
+            accumulate(suggestions, suggestionTotals);
         });
 
         const relevant = weeklyTotals.slice(1);
+        const suggestionRelevant = suggestionTotals.slice(1);
         const peakHours = Math.max(...relevant, 0);
         const peakPercent = Math.round((peakHours / maxHours) * 100);
+        const suggestionPeakHours = Math.max(...suggestionRelevant, 0);
+        const suggestionPeakPercent = Math.round((suggestionPeakHours / maxHours) * 100);
 
         const sumPoints: LanePoint[] = relevant.map((hours, i) => ({
             id: `sum-${i + 1}`,
@@ -312,7 +438,22 @@ function WorkloadTable({
             year: displayYear,
         }));
 
-        return { sumPoints, peakHours, peakPercent };
+        const suggestionPoints: LanePoint[] = suggestionRelevant.map((hours, i) => ({
+            id: `sum-suggestion-${i + 1}`,
+            week: i + 1,
+            hours,
+            fixed: true,
+            year: displayYear,
+        }));
+
+        return {
+            sumPoints,
+            suggestionPoints,
+            peakHours,
+            peakPercent,
+            suggestionPeakHours,
+            suggestionPeakPercent,
+        };
     }, [projectLanes, currentYearWeeks, displayYear, maxHours]);
 
     return (
@@ -362,6 +503,12 @@ function WorkloadTable({
                         <span>
                             Peak load: {summary.peakHours.toFixed(1)}h ({summary.peakPercent}%)
                         </span>
+                        {summary.suggestionPeakHours > 0 && (
+                            <span>
+                                Suggested peak: {summary.suggestionPeakHours.toFixed(1)}h (
+                                {summary.suggestionPeakPercent}%)
+                            </span>
+                        )}
                     </div>
                 </div>
             </div>
@@ -424,28 +571,97 @@ function WorkloadTable({
                         No projects match the current filter.
                     </div>
                 ) : (
-                    filteredProjectLanes.map((lane) => (
-                        <Lane
-                            key={lane.id}
-                            description={
-                                <div className="flex items-center gap-2">
-                                    <span>{lane.name}</span>
-                                    <ProjectStatusBadge status={lane.status} />
-                                </div>
-                            }
-                            points={lane.points}
-                            onPointsChange={(next) => {
-                                if (!canEdit) return;
-                                handleLaneChange(lane.id, next);
-                            }}
-                            editable={canEdit}
-                            capacityHours={weeklyCapacityHours}
-                            snapStepHours={0.5}
-                            totalWeeks={currentYearWeeks}
-                            activeWeek={activeWeekPosition}
-                            year={displayYear}
-                        />
-                    ))
+                    filteredProjectLanes.map((lane) => {
+                        const laneMode = canEdit
+                            ? "plan"
+                            : canSuggest
+                            ? "suggestion"
+                            : "view";
+
+                        const primaryPoints =
+                            laneMode === "plan"
+                                ? lane.points
+                                : laneMode === "suggestion"
+                                ? lane.suggestions
+                                : lane.points;
+
+                        const comparisonPoints =
+                            laneMode === "plan"
+                                ? lane.suggestions
+                                : laneMode === "suggestion"
+                                ? lane.points
+                                : lane.suggestions;
+
+                        const editable = laneMode !== "view";
+                        const handleChange =
+                            laneMode === "plan"
+                                ? handleLaneChange
+                                : laneMode === "suggestion"
+                                ? handleSuggestionChange
+                                : null;
+
+                        const primaryStroke =
+                            laneMode === "suggestion"
+                                ? SUGGESTION_STROKE_COLOR
+                                : PLAN_STROKE_COLOR;
+
+                        const comparisonStroke =
+                            comparisonPoints.length === 0
+                                ? undefined
+                                : laneMode === "suggestion"
+                                ? PLAN_STROKE_COLOR
+                                : SUGGESTION_STROKE_COLOR;
+
+                        const comparisonDash =
+                            comparisonPoints.length === 0
+                                ? undefined
+                                : laneMode === "plan"
+                                ? "6,4"
+                                : laneMode === "view"
+                                ? "6,4"
+                                : undefined;
+
+                        const comparisonOpacity =
+                            laneMode === "suggestion" ? 0.9 : laneMode === "plan" ? 0.8 : 0.6;
+
+                        const pointFill =
+                            laneMode === "suggestion" ? SUGGESTION_POINT_FILL : PLAN_POINT_FILL;
+                        const pointStroke =
+                            laneMode === "suggestion"
+                                ? SUGGESTION_POINT_STROKE
+                                : PLAN_POINT_STROKE;
+
+                        return (
+                            <Lane
+                                key={lane.id}
+                                description={
+                                    <div className="flex items-center gap-2">
+                                        <span>{lane.name}</span>
+                                        <ProjectStatusBadge status={lane.status} />
+                                    </div>
+                                }
+                                points={primaryPoints}
+                                comparisonPoints={comparisonPoints}
+                                onPointsChange={
+                                    handleChange
+                                        ? (next) => handleChange(lane.id, next)
+                                        : undefined
+                                }
+                                editable={editable}
+                                capacityHours={weeklyCapacityHours}
+                                snapStepHours={0.5}
+                                totalWeeks={currentYearWeeks}
+                                activeWeek={activeWeekPosition}
+                                year={displayYear}
+                                primaryStroke={primaryStroke}
+                                comparisonStroke={comparisonStroke}
+                                comparisonStrokeDasharray={comparisonDash}
+                                comparisonOpacity={comparisonOpacity}
+                                pointFill={pointFill}
+                                pointStroke={pointStroke}
+                            />
+                        );
+                    })
                 )}
 
                 {!isLoading && summary.sumPoints.length > 0 && (
@@ -453,18 +669,33 @@ function WorkloadTable({
                         <Lane
                             description="Total workload"
                             points={summary.sumPoints}
+                            comparisonPoints={summary.suggestionPoints}
                             editable={false}
                             capacityHours={weeklyCapacityHours}
                             showBands
                             totalWeeks={currentYearWeeks}
                             activeWeek={activeWeekPosition}
                             year={displayYear}
+                            primaryStroke={PLAN_STROKE_COLOR}
+                            comparisonStroke={
+                                summary.suggestionPoints.length > 0
+                                    ? SUGGESTION_STROKE_COLOR
+                                    : undefined
+                            }
+                            comparisonStrokeDasharray={
+                                summary.suggestionPoints.length > 0 ? "6,4" : undefined
+                            }
+                            comparisonOpacity={0.65}
                         />
                     </div>
                 )}
             </div>
-            <div className="text-xs text-slate-400">
-                <p>Add projects. Double-Click on a lane to enter edit mode. Add or remove points using Alt + Click. Drag the points to increase or decrease the workload.</p>
+            <div className="text-xs text-slate-400 space-y-1">
+                <p>
+                    Double-click on a lane to enter edit mode. Add or remove points using Alt + Click. Drag
+                    the points to adjust the workload. Employees can propose workload suggestions on the
+                    dimmer teal line, while managers adjust the brighter plan line.
+                </p>
                 <p>The workload data is for planning purposes only and may not reflect actual hours worked.</p>
             </div>
         </div>
