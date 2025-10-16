@@ -37,6 +37,8 @@ type WorkloadRow = {
     year: number;
 };
 
+type WorkloadSuggestionRow = WorkloadRow;
+
 const projectStatusOptions: ProjectStatus[] = ["backlog", "started", "finished", "canceled"];
 
 const isValidProjectStatus = (value: unknown): value is ProjectStatus =>
@@ -676,12 +678,54 @@ const server = serve({
                     }
                 }
 
+                const suggestionTotals = await sql<{
+                    employee_id: string;
+                    week: number;
+                    total_hours: number;
+                }[]>`
+                    SELECT e.external_id AS employee_id, s.week AS week, SUM(s.hours) AS total_hours
+                    FROM workload_suggestions s
+                    INNER JOIN employees e ON s.employee_id = e.id
+                    WHERE s.year = ${parsedYear}
+                    GROUP BY e.external_id, s.week
+                    ORDER BY e.external_id, s.week
+                `;
+
+                const suggestionsByEmployee = new Map<
+                    string,
+                    Array<{ week: number; hours: number }>
+                >();
+
+                for (const row of suggestionTotals) {
+                    const week = Number(row.week);
+                    if (!Number.isFinite(week) || week < 1) continue;
+                    const hours = Number(row.total_hours);
+                    const bucket = suggestionsByEmployee.get(row.employee_id);
+                    const entry = { week: Math.round(week), hours };
+                    if (bucket) {
+                        bucket.push(entry);
+                    } else {
+                        suggestionsByEmployee.set(row.employee_id, [entry]);
+                    }
+                }
+
                 const payload = employees.map((employee) => {
                     const aggregates = totalsByEmployee.get(employee.external_id) ?? [];
                     const points: LanePoint[] = aggregates
                         .sort((a, b) => a.week - b.week)
                         .map((entry) => ({
                             id: `${employee.external_id}-${entry.week}`,
+                            week: entry.week,
+                            hours: entry.hours,
+                            year: parsedYear,
+                        }));
+
+                    const suggestionAggregates =
+                        suggestionsByEmployee.get(employee.external_id) ?? [];
+                    const suggestions: LanePoint[] = suggestionAggregates
+                        .sort((a, b) => a.week - b.week)
+                        .map((entry) => ({
+                            id: `${employee.external_id}-suggestion-${entry.week}`,
                             week: entry.week,
                             hours: entry.hours,
                             year: parsedYear,
@@ -695,6 +739,7 @@ const server = serve({
                         active: employee.active,
                         tags: parseSkills(employee.skills),
                         points,
+                        suggestions,
                     };
                 });
 
@@ -758,6 +803,7 @@ const server = serve({
                         active: boolean;
                         status: ProjectStatus;
                         points: LanePoint[];
+                        suggestions: LanePoint[];
                     }
                 >();
 
@@ -782,12 +828,54 @@ const server = serve({
                         active: row.project_active,
                         status: (row.project_status ?? "backlog") as ProjectStatus,
                         points: [point],
+                        suggestions: [],
+                    });
+                }
+
+                const suggestionRows = await sql<WorkloadSuggestionRow[]>`
+                    SELECT
+                        p.external_id AS project_id,
+                        p.name AS project_name,
+                        p.active AS project_active,
+                        p.status AS project_status,
+                        s.week,
+                        s.hours,
+                        s.year
+                    FROM workload_suggestions s
+                    INNER JOIN projects p ON s.project_id = p.id
+                    WHERE s.employee_id = ${employeeId} AND s.year = ${parsedYear}
+                    ORDER BY p.name, s.week
+                `;
+
+                for (const row of suggestionRows) {
+                    const suggestionPoint: LanePoint = {
+                        id: `${row.project_id}-suggestion-${row.week}`,
+                        week: row.week,
+                        hours: row.hours,
+                        year: row.year,
+                        absoluteWeek: row.week,
+                    };
+
+                    const existing = lanes.get(row.project_id);
+                    if (existing) {
+                        existing.suggestions.push(suggestionPoint);
+                        continue;
+                    }
+
+                    lanes.set(row.project_id, {
+                        projectId: row.project_id,
+                        name: row.project_name,
+                        active: row.project_active,
+                        status: (row.project_status ?? "backlog") as ProjectStatus,
+                        points: [],
+                        suggestions: [suggestionPoint],
                     });
                 }
 
                 const payload = Array.from(lanes.values()).map((lane) => ({
                     ...lane,
                     points: lane.points.sort((a, b) => a.week - b.week),
+                    suggestions: lane.suggestions.sort((a, b) => a.week - b.week),
                 }));
 
                 return Response.json(payload);
@@ -913,12 +1001,201 @@ const server = serve({
                     absoluteWeek: row.week,
                 }));
 
+                const updatedSuggestionRows = await sql<WorkloadSuggestionRow[]>`
+                    SELECT
+                        p.external_id AS project_id,
+                        p.name AS project_name,
+                        p.active AS project_active,
+                        p.status AS project_status,
+                        s.week,
+                        s.hours,
+                        s.year
+                    FROM workload_suggestions s
+                    INNER JOIN projects p ON s.project_id = p.id
+                    WHERE s.employee_id = ${employeeId}
+                      AND s.project_id = ${project.id}
+                      AND s.year = ${parsedYear}
+                    ORDER BY s.week
+                `;
+
+                const responseSuggestions: LanePoint[] = updatedSuggestionRows.map((row) => ({
+                    id: `${row.project_id}-suggestion-${row.week}`,
+                    week: row.week,
+                    hours: row.hours,
+                    year: row.year,
+                    absoluteWeek: row.week,
+                }));
+
                 return Response.json({
                     projectId: project.external_id,
                     name: project.name,
                     active: project.active,
                     status: (project.status ?? "backlog") as ProjectStatus,
                     points: responsePoints,
+                    suggestions: responseSuggestions,
+                });
+            },
+        },
+
+        "/api/workloads/:employeeExternalId/:projectExternalId/:year/suggestions": {
+            async PUT(req) {
+                const { employeeExternalId, projectExternalId, year } = req.params;
+                const session = await requireAuth(req);
+                if (session instanceof Response) return session;
+
+                const isSelf = session.user.externalId === employeeExternalId;
+                const canManage = session.user.canManageWorkload || session.user.isAdmin;
+                if (!isSelf && !canManage) {
+                    return new Response("Forbidden.", { status: 403 });
+                }
+
+                const parsedYear = Number(year);
+                if (!Number.isFinite(parsedYear)) {
+                    return new Response("Invalid year", { status: 400 });
+                }
+
+                let payload: unknown;
+                try {
+                    payload = await req.json();
+                } catch (error) {
+                    return new Response(`Invalid JSON payload: ${String(error)}`, { status: 400 });
+                }
+
+                if (
+                    typeof payload !== "object" ||
+                    payload === null ||
+                    !Array.isArray((payload as { points?: unknown }).points)
+                ) {
+                    return new Response("Payload must include a points array.", { status: 400 });
+                }
+
+                const rawPoints = (payload as { points: Array<Record<string, unknown>> }).points;
+                const sanitizedPoints = rawPoints
+                    .map((raw) => ({
+                        week: Number(raw.week),
+                        hours: Number(raw.hours),
+                    }))
+                    .filter(
+                        (point) =>
+                            Number.isFinite(point.week) &&
+                            Number.isFinite(point.hours) &&
+                            point.week >= 1 &&
+                            point.week <= 53
+                    )
+                    .map((point) => ({
+                        week: Math.round(point.week),
+                        hours: point.hours,
+                    }))
+                    .sort((a, b) => a.week - b.week);
+
+                const uniquePoints = Array.from(
+                    new Map<number, { week: number; hours: number }>(
+                        sanitizedPoints.map((point) => [point.week, point])
+                    ).values()
+                );
+
+                const employeeRows = await sql<{ id: number }[]>`
+                    SELECT id
+                    FROM employees
+                    WHERE external_id = ${employeeExternalId}
+                    LIMIT 1
+                `;
+
+                if (employeeRows.length === 0) {
+                    return new Response("Employee not found", { status: 404 });
+                }
+
+                const projectRows = await sql<{ id: number; external_id: string; name: string; active: boolean; status: ProjectStatus | null }[]>`
+                    SELECT id, external_id, name, active, status
+                    FROM projects
+                    WHERE external_id = ${projectExternalId}
+                    LIMIT 1
+                `;
+
+                if (projectRows.length === 0) {
+                    return new Response("Project not found", { status: 404 });
+                }
+
+                const employeeId = employeeRows[0]!.id;
+                const project = projectRows[0]!;
+
+                await sql.begin(async (tx) => {
+                    await tx`
+                        DELETE FROM workload_suggestions
+                        WHERE employee_id = ${employeeId}
+                          AND project_id = ${project.id}
+                          AND year = ${parsedYear}
+                    `;
+
+                    for (const point of uniquePoints) {
+                        await tx`
+                            INSERT INTO workload_suggestions (employee_id, project_id, week, year, hours)
+                            VALUES (${employeeId}, ${project.id}, ${point.week}, ${parsedYear}, ${point.hours})
+                            ON CONFLICT (employee_id, project_id, week, year)
+                            DO UPDATE SET
+                                hours = EXCLUDED.hours,
+                                updated_at = CURRENT_TIMESTAMP
+                        `;
+                    }
+                });
+
+                const updatedSuggestionRows = await sql<WorkloadSuggestionRow[]>`
+                    SELECT
+                        p.external_id AS project_id,
+                        p.name AS project_name,
+                        p.active AS project_active,
+                        p.status AS project_status,
+                        s.week,
+                        s.hours,
+                        s.year
+                    FROM workload_suggestions s
+                    INNER JOIN projects p ON s.project_id = p.id
+                    WHERE s.employee_id = ${employeeId}
+                      AND s.project_id = ${project.id}
+                      AND s.year = ${parsedYear}
+                    ORDER BY s.week
+                `;
+
+                const responseSuggestions: LanePoint[] = updatedSuggestionRows.map((row) => ({
+                    id: `${row.project_id}-suggestion-${row.week}`,
+                    week: row.week,
+                    hours: row.hours,
+                    year: row.year,
+                    absoluteWeek: row.week,
+                }));
+
+                const updatedPlanRows = await sql<WorkloadRow[]>`
+                    SELECT
+                        p.external_id AS project_id,
+                        p.name AS project_name,
+                        p.active AS project_active,
+                        p.status AS project_status,
+                        w.week,
+                        w.hours,
+                        w.year
+                    FROM workloads w
+                    INNER JOIN projects p ON w.project_id = p.id
+                    WHERE w.employee_id = ${employeeId}
+                      AND w.project_id = ${project.id}
+                      AND w.year = ${parsedYear}
+                    ORDER BY w.week
+                `;
+
+                const responsePlanPoints: LanePoint[] = updatedPlanRows.map((row) => ({
+                    id: `${row.project_id}-${row.week}`,
+                    week: row.week,
+                    hours: row.hours,
+                    year: row.year,
+                    absoluteWeek: row.week,
+                }));
+
+                return Response.json({
+                    projectId: project.external_id,
+                    name: project.name,
+                    active: project.active,
+                    status: (project.status ?? "backlog") as ProjectStatus,
+                    points: responsePlanPoints,
+                    suggestions: responseSuggestions,
                 });
             },
         },
