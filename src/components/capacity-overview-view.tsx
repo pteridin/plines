@@ -151,6 +151,16 @@ export function CapacityOverviewView({
                 </div>
                 <div className="flex flex-col gap-3 text-sm text-slate-200 sm:items-end">
                     <div className="flex items-center gap-2">
+                        {displayYear !== todayInfo.year && (
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setDisplayYear(todayInfo.year)}
+                                className="border-slate-600/60 bg-slate-900/60 text-white hover:bg-slate-800/80"
+                            >
+                                Current year
+                            </Button>
+                        )}
                         <Button
                             variant="ghost"
                             size="icon-sm"
@@ -170,16 +180,6 @@ export function CapacityOverviewView({
                         >
                             ›
                         </Button>
-                        {displayYear !== todayInfo.year && (
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setDisplayYear(todayInfo.year)}
-                                className="border-slate-600/60 bg-slate-900/60 text-white hover:bg-slate-800/80"
-                            >
-                                Current year
-                            </Button>
-                        )}
                     </div>
                     <div className="text-xs text-slate-400">
                         Viewing {filteredSummaries.length} of {summaries.length} employees.

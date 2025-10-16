@@ -318,6 +318,16 @@ function WorkloadTable({
                 </div>
                 <div className="flex flex-col items-start gap-2 text-xs text-slate-300 sm:items-end">
                     <div className="flex items-center gap-2">
+                        {displayYear !== todayInfo.year && (
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setDisplayYear(todayInfo.year)}
+                                className="border-slate-600/60 bg-slate-900/60 text-white hover:bg-slate-800/80"
+                            >
+                                Current year
+                            </Button>
+                        )}
                         <Button
                             variant="ghost"
                             size="icon-sm"
@@ -337,16 +347,6 @@ function WorkloadTable({
                         >
                             <ChevronRight className="size-4" />
                         </Button>
-                        {displayYear !== todayInfo.year && (
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setDisplayYear(todayInfo.year)}
-                                className="border-slate-600/60 bg-slate-900/60 text-white hover:bg-slate-800/80"
-                            >
-                                Current year
-                            </Button>
-                        )}
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                         <span>Weeks: {currentYearWeeks}</span>
