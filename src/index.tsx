@@ -24,6 +24,7 @@ type EmployeeRecord = {
     username: string;
     can_manage_workload: boolean;
     is_admin: boolean;
+    skills: string | null;
 };
 
 type WorkloadRow = {
@@ -51,6 +52,38 @@ const projectRowToPayload = (project: ProjectRecord) => ({
     status: (project.status ?? "backlog") as ProjectStatus,
 });
 
+const normalizeTagList = (values: string[]): string[] => {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const value of values) {
+        const trimmed = typeof value === "string" ? value.trim() : "";
+        if (!trimmed) continue;
+        const key = trimmed.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push(trimmed);
+    }
+    return result;
+};
+
+const parseSkills = (raw: string | null): string[] => {
+    if (!raw) return [];
+    try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (Array.isArray(parsed)) {
+            return normalizeTagList(parsed.map((entry) => String(entry)));
+        }
+    } catch {
+        // fall through
+    }
+    if (typeof raw === "string" && raw.includes(",")) {
+        return normalizeTagList(raw.split(",").map((entry) => entry));
+    }
+    return normalizeTagList([raw]);
+};
+
+const serializeTags = (tags: string[] | null | undefined) => JSON.stringify(tags ?? []);
+
 const employeeRowToPayload = (employee: EmployeeRecord) => ({
     id: employee.external_id,
     name: employee.name,
@@ -60,6 +93,7 @@ const employeeRowToPayload = (employee: EmployeeRecord) => ({
     username: employee.username,
     canManageWorkload: employee.can_manage_workload,
     isAdmin: employee.is_admin,
+    tags: parseSkills(employee.skills),
 });
 
 const SECRET_KEY = process.env.SECRET_KEY;
@@ -81,6 +115,7 @@ type AuthenticatedEmployee = {
     workHours: number;
     active: boolean;
     position: string | null;
+    tags: string[];
 };
 
 type AuthSession = {
@@ -161,6 +196,7 @@ const getSessionFromRequest = async (req: Request): Promise<AuthSession | null> 
         work_hours: number;
         active: boolean;
         position: string | null;
+        skills: string | null;
     }[]>`
         SELECT
             s.token,
@@ -173,7 +209,8 @@ const getSessionFromRequest = async (req: Request): Promise<AuthSession | null> 
             e.is_admin,
             e.work_hours,
             e.active,
-            e.position
+            e.position,
+            e.skills
         FROM sessions s
         INNER JOIN employees e ON s.employee_id = e.id
         WHERE s.token = ${token}
@@ -204,6 +241,7 @@ const getSessionFromRequest = async (req: Request): Promise<AuthSession | null> 
             workHours: sessionRow.work_hours,
             active: sessionRow.active,
             position: sessionRow.position,
+            tags: parseSkills(sessionRow.skills),
         },
     };
 };
@@ -277,7 +315,8 @@ const ensureAdminUser = async () => {
             username,
             password_hash,
             can_manage_workload,
-            is_admin
+            is_admin,
+            skills
         )
         VALUES (
             ${externalId},
@@ -288,7 +327,8 @@ const ensureAdminUser = async () => {
             ${normalizedUsername},
             ${passwordHash},
             TRUE,
-            TRUE
+            TRUE,
+            '[]'
         )
     `;
 
@@ -335,8 +375,9 @@ const server = serve({
                     work_hours: number;
                     active: boolean;
                     position: string | null;
+                    skills: string | null;
                 }[]>`
-                    SELECT id, external_id, username, name, password_hash, can_manage_workload, is_admin, work_hours, active, position
+                    SELECT id, external_id, username, name, password_hash, can_manage_workload, is_admin, work_hours, active, position, skills
                     FROM employees
                     WHERE LOWER(username) = ${username}
                     LIMIT 1
@@ -379,6 +420,7 @@ const server = serve({
                     workHours: employee.work_hours,
                     active: employee.active,
                     position: employee.position,
+                    tags: parseSkills(employee.skills),
                 };
 
                 return new Response(JSON.stringify(payloadBody), {
@@ -432,6 +474,7 @@ const server = serve({
                         workHours: session.user.workHours,
                         active: session.user.active,
                         position: session.user.position,
+                        tags: session.user.tags,
                     }),
                     { status: 200, headers }
                 );
@@ -587,6 +630,78 @@ const server = serve({
                 `;
 
                 return Response.json(projectRowToPayload(refreshed[0]!));
+            },
+        },
+
+        "/api/workloads/summary/:year": {
+            async GET(req) {
+                const { year } = req.params;
+                const session = await requireAuth(req, { requireManager: true });
+                if (session instanceof Response) return session;
+
+                const parsedYear = Number(year);
+                if (!Number.isFinite(parsedYear)) {
+                    return new Response("Invalid year", { status: 400 });
+                }
+
+                const employees = await sql<EmployeeRecord[]>`
+                    SELECT external_id, name, position, work_hours, active, username, can_manage_workload, is_admin, skills
+                    FROM employees
+                    ORDER BY name
+                `;
+
+                const totals = await sql<{
+                    employee_id: string;
+                    week: number;
+                    total_hours: number;
+                }[]>`
+                    SELECT e.external_id AS employee_id, w.week AS week, SUM(w.hours) AS total_hours
+                    FROM workloads w
+                    INNER JOIN employees e ON w.employee_id = e.id
+                    WHERE w.year = ${parsedYear}
+                    GROUP BY e.external_id, w.week
+                    ORDER BY e.external_id, w.week
+                `;
+
+                const totalsByEmployee = new Map<string, Array<{ week: number; hours: number }>>();
+                for (const row of totals) {
+                    const week = Number(row.week);
+                    if (!Number.isFinite(week) || week < 1) continue;
+                    const hours = Number(row.total_hours);
+                    const bucket = totalsByEmployee.get(row.employee_id);
+                    if (bucket) {
+                        bucket.push({ week: Math.round(week), hours });
+                    } else {
+                        totalsByEmployee.set(row.employee_id, [{ week: Math.round(week), hours }]);
+                    }
+                }
+
+                const payload = employees.map((employee) => {
+                    const aggregates = totalsByEmployee.get(employee.external_id) ?? [];
+                    const points: LanePoint[] = aggregates
+                        .sort((a, b) => a.week - b.week)
+                        .map((entry) => ({
+                            id: `${employee.external_id}-${entry.week}`,
+                            week: entry.week,
+                            hours: entry.hours,
+                            year: parsedYear,
+                        }));
+
+                    return {
+                        id: employee.external_id,
+                        name: employee.name,
+                        position: employee.position ?? "",
+                        workHours: employee.work_hours,
+                        active: employee.active,
+                        tags: parseSkills(employee.skills),
+                        points,
+                    };
+                });
+
+                return Response.json({
+                    year: parsedYear,
+                    employees: payload,
+                });
             },
         },
 
@@ -814,7 +929,7 @@ const server = serve({
                 if (session instanceof Response) return session;
 
                 const employees = await sql<EmployeeRecord[]>`
-                    SELECT external_id, name, position, work_hours, active, username, can_manage_workload, is_admin
+                    SELECT external_id, name, position, work_hours, active, username, can_manage_workload, is_admin, skills
                     FROM employees
                     ORDER BY name
                 `;
@@ -847,6 +962,7 @@ const server = serve({
                     password?: unknown;
                     canManageWorkload?: unknown;
                     isAdmin?: unknown;
+                    tags?: unknown;
                 };
 
                 const name =
@@ -894,6 +1010,21 @@ const server = serve({
                         : null;
                 const externalId = providedId ?? randomId("employee");
 
+                let tags: string[] = [];
+                if (Object.prototype.hasOwnProperty.call(body, "tags")) {
+                    if (Array.isArray(body.tags)) {
+                        tags = normalizeTagList(body.tags.map((value) => String(value)));
+                    } else if (typeof body.tags === "string") {
+                        tags = normalizeTagList(body.tags.split(",").map((value) => value));
+                    } else if (body.tags === null) {
+                        tags = [];
+                    } else {
+                        return new Response("Tags must be a string, array of strings, or null.", {
+                            status: 400,
+                        });
+                    }
+                }
+
                 try {
                     const passwordHash = await Bun.password.hash(password);
 
@@ -907,7 +1038,8 @@ const server = serve({
                             username,
                             password_hash,
                             can_manage_workload,
-                            is_admin
+                            is_admin,
+                            skills
                         )
                         VALUES (
                             ${externalId},
@@ -918,9 +1050,10 @@ const server = serve({
                             ${usernameCandidate},
                             ${passwordHash},
                             ${canManageWorkload},
-                            ${isAdmin}
+                            ${isAdmin},
+                            ${serializeTags(tags)}
                         )
-                        RETURNING external_id, name, position, work_hours, active, username, can_manage_workload, is_admin
+                        RETURNING external_id, name, position, work_hours, active, username, can_manage_workload, is_admin, skills
                     `;
                     return Response.json(employeeRowToPayload(inserted[0]!));
                 } catch (error) {
@@ -961,10 +1094,11 @@ const server = serve({
                     password?: unknown;
                     canManageWorkload?: unknown;
                     isAdmin?: unknown;
+                    tags?: unknown;
                 };
 
                 const existing = await sql<EmployeeRecord[]>`
-                    SELECT external_id, name, position, work_hours, active, username, can_manage_workload, is_admin
+                    SELECT external_id, name, position, work_hours, active, username, can_manage_workload, is_admin, skills
                     FROM employees
                     WHERE external_id = ${employeeExternalId}
                     LIMIT 1
@@ -972,6 +1106,28 @@ const server = serve({
 
                 if (existing.length === 0) {
                     return new Response("Employee not found", { status: 404 });
+                }
+
+                const targetEmployee = existing[0]!;
+                const isSelfUpdate = targetEmployee.external_id === session.user.externalId;
+                if (isSelfUpdate && session.user.isAdmin) {
+                    if (
+                        Object.prototype.hasOwnProperty.call(body, "isAdmin") &&
+                        body.isAdmin === false
+                    ) {
+                        return new Response("Administrators cannot revoke their own admin access.", {
+                            status: 400,
+                        });
+                    }
+                    if (
+                        Object.prototype.hasOwnProperty.call(body, "canManageWorkload") &&
+                        body.canManageWorkload === false
+                    ) {
+                        return new Response(
+                            "Administrators cannot remove their own project manager permissions.",
+                            { status: 400 }
+                        );
+                    }
                 }
 
                 const updates: {
@@ -992,7 +1148,7 @@ const server = serve({
                 }
 
                 let updatePosition = false;
-                let nextPosition: string | null = existing[0]!.position;
+                let nextPosition: string | null = targetEmployee.position;
                 if (Object.prototype.hasOwnProperty.call(body, "position")) {
                     if (typeof body.position === "string") {
                         nextPosition = body.position.trim();
@@ -1064,9 +1220,33 @@ const server = serve({
                     updates.password_hash = await Bun.password.hash(body.password);
                 }
 
+                let updateTags = false;
+                let nextTagsSerialized: string | null = null;
+                if (Object.prototype.hasOwnProperty.call(body, "tags")) {
+                    if (Array.isArray(body.tags)) {
+                        updateTags = true;
+                        nextTagsSerialized = serializeTags(
+                            normalizeTagList(body.tags.map((value) => String(value)))
+                        );
+                    } else if (typeof body.tags === "string") {
+                        updateTags = true;
+                        nextTagsSerialized = serializeTags(
+                            normalizeTagList(body.tags.split(",").map((value) => value))
+                        );
+                    } else if (body.tags === null) {
+                        updateTags = true;
+                        nextTagsSerialized = serializeTags([]);
+                    } else {
+                        return new Response("Tags must be a string, array of strings, or null.", {
+                            status: 400,
+                        });
+                    }
+                }
+
                 if (
                     Object.keys(updates).length === 0 &&
-                    !updatePosition
+                    !updatePosition &&
+                    !updateTags
                 ) {
                     return new Response("No valid updates supplied.", { status: 400 });
                 }
@@ -1082,7 +1262,8 @@ const server = serve({
                             username = COALESCE(${updates.username ?? null}, username),
                             can_manage_workload = COALESCE(${updates.can_manage_workload ?? null}, can_manage_workload),
                             is_admin = COALESCE(${updates.is_admin ?? null}, is_admin),
-                            password_hash = COALESCE(${updates.password_hash ?? null}, password_hash)
+                            password_hash = COALESCE(${updates.password_hash ?? null}, password_hash),
+                            skills = CASE ${updateTags} WHEN true THEN ${nextTagsSerialized} ELSE skills END
                         WHERE external_id = ${employeeExternalId}
                     `;
                 } catch (error) {
@@ -1096,7 +1277,7 @@ const server = serve({
                 }
 
                 const refreshed = await sql<EmployeeRecord[]>`
-                    SELECT external_id, name, position, work_hours, active, username, can_manage_workload, is_admin
+                    SELECT external_id, name, position, work_hours, active, username, can_manage_workload, is_admin, skills
                     FROM employees
                     WHERE external_id = ${employeeExternalId}
                     LIMIT 1

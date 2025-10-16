@@ -10,6 +10,7 @@ type EmployeeSeed = {
     password: string;
     canManageWorkload?: boolean;
     isAdmin?: boolean;
+    skills?: string[];
 };
 
 type ProjectSeed = {
@@ -38,6 +39,7 @@ const employeeSeeds: EmployeeSeed[] = [
         username: "jordan",
         password: "password123",
         canManageWorkload: true,
+        skills: ["delivery", "leadership", "planning"],
     },
     {
         externalId: "user-2",
@@ -48,6 +50,7 @@ const employeeSeeds: EmployeeSeed[] = [
         username: "alice",
         password: "password123",
         canManageWorkload: true,
+        skills: ["product", "analysis", "stakeholder"],
     },
     {
         externalId: "user-3",
@@ -57,6 +60,7 @@ const employeeSeeds: EmployeeSeed[] = [
         active: true,
         username: "bob",
         password: "password123",
+        skills: ["design", "ui", "ux"],
     },
 ];
 
@@ -152,7 +156,8 @@ export async function sql_init() {
                 username VARCHAR(100) NOT NULL UNIQUE,
                 password_hash TEXT NOT NULL,
                 can_manage_workload BOOLEAN DEFAULT FALSE,
-                is_admin BOOLEAN DEFAULT FALSE
+                is_admin BOOLEAN DEFAULT FALSE,
+                skills TEXT DEFAULT '[]'
             );
         `;
 
@@ -198,7 +203,8 @@ export async function sql_init() {
                     username,
                     password_hash,
                     can_manage_workload,
-                    is_admin
+                    is_admin,
+                    skills
                 )
                 VALUES (
                     ${employee.externalId},
@@ -209,7 +215,8 @@ export async function sql_init() {
                     ${employee.username},
                     ${employee.passwordHash},
                     ${employee.canManageWorkload ?? false},
-                    ${employee.isAdmin ?? false}
+                    ${employee.isAdmin ?? false},
+                    ${JSON.stringify(employee.skills ?? [])}
                 )
             `;
         }

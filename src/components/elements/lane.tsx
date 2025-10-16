@@ -32,6 +32,7 @@ export type LanePoint = {
     hours: number;
     fixed?: boolean;
     year?: number;
+    absoluteWeek?: number;
 };
 
 type HoverInfo = {

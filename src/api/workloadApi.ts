@@ -51,6 +51,17 @@ export type EmployeeSummary = {
     username: string;
     canManageWorkload: boolean;
     isAdmin: boolean;
+    tags: string[];
+};
+
+export type EmployeeCapacitySummary = {
+    id: string;
+    name: string;
+    position: string;
+    workHours: number;
+    active: boolean;
+    tags: string[];
+    points: LanePoint[];
 };
 
 const jsonHeaders = {
@@ -153,6 +164,7 @@ export const fetchEmployees = async (): Promise<EmployeeSummary[]> => {
     return employees.map((employee) => ({
         ...employee,
         position: employee.position ?? "",
+        tags: Array.isArray(employee.tags) ? employee.tags : [],
     }));
 };
 
@@ -165,6 +177,7 @@ export type CreateEmployeeInput = {
     password: string;
     canManageWorkload?: boolean;
     isAdmin?: boolean;
+    tags?: string[];
 };
 
 export const createEmployee = async (input: CreateEmployeeInput): Promise<EmployeeSummary> => {
@@ -180,6 +193,7 @@ export const createEmployee = async (input: CreateEmployeeInput): Promise<Employ
             password: input.password,
             canManageWorkload: input.canManageWorkload ?? false,
             isAdmin: input.isAdmin ?? false,
+            tags: input.tags ?? [],
         }),
     });
 
@@ -191,7 +205,7 @@ export type UpdateEmployeeInput = Partial<
         EmployeeSummary,
         "name" | "position" | "workHours" | "active" | "username" | "canManageWorkload" | "isAdmin"
     >
-> & { password?: string };
+> & { password?: string; tags?: string[] };
 
 export const updateEmployee = async (
     employeeId: string,
@@ -200,10 +214,39 @@ export const updateEmployee = async (
     const response = await fetch(`/api/employees/${encodeURIComponent(employeeId)}`, {
         method: "PUT",
         headers: jsonHeaders,
-        body: JSON.stringify(updates),
+        body: JSON.stringify({
+            ...updates,
+            tags: updates.tags,
+        }),
     });
 
     return await handleResponse<EmployeeSummary>(response, "Updating employee");
+};
+
+export const fetchCapacitySummary = async (
+    year: number
+): Promise<EmployeeCapacitySummary[]> => {
+    const response = await fetch(
+        `/api/workloads/summary/${encodeURIComponent(String(year))}`
+    );
+
+    const payload = await handleResponse<{
+        year: number;
+        employees: EmployeeCapacitySummary[];
+    }>(response, "Fetching workload summary");
+
+    return payload.employees.map((entry) => ({
+        ...entry,
+        position: entry.position ?? "",
+        tags: Array.isArray(entry.tags) ? entry.tags : [],
+        points: entry.points.map((point) => ({
+            ...point,
+            id: point.id,
+            week: point.week,
+            hours: point.hours,
+            year: point.year ?? payload.year,
+        })),
+    }));
 };
 
 export const createProject = async (input: {

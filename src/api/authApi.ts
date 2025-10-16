@@ -7,6 +7,7 @@ export type AuthUser = {
     workHours: number;
     active: boolean;
     position: string | null;
+    tags: string[];
 };
 
 export class ApiError extends Error {

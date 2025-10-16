@@ -1,0 +1,43 @@
+version: "3.9"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${APP_DATABASE_URL:-postgres://plines:plines123@db:5432/plines}
+      SECRET_KEY: ${APP_SECRET_KEY:-change_me}
+      ADMIN_USERNAME: ${APP_ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD:-admin123}
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-plines}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-plines123}
+      POSTGRES_DB: ${POSTGRES_DB:-plines}
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-plines} -d ${POSTGRES_DB:-plines}",
+        ]
+      interval: 5s
+      retries: 5
+      start_period: 5s
+      timeout: 5s
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  db_data:

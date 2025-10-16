@@ -1,5 +1,6 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronDown, ClipboardList, LogOut, Users } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { FormEvent } from "react";
+import { ChevronDown, ClipboardList, LineChart, LogOut, UserCog, Users } from "lucide-react";
 import "./index.css";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -13,11 +14,13 @@ import {
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ManagementView } from "@/components/management-view";
 import { WorkloadView } from "@/components/workload-view";
 import { useAuth } from "@/context/AuthContext";
+import { EmployeeManagementView } from "@/components/employee-management-view";
+import { ProjectManagementView } from "@/components/project-management-view";
+import { CapacityOverviewView } from "@/components/capacity-overview-view";
 
-type ActiveView = "workload" | "management";
+type ActiveView = "workload" | "capacity" | "employees" | "projects";
 
 export function App() {
     const { user, isLoading, error, login, logout, clearError } = useAuth();
@@ -43,7 +46,7 @@ export function App() {
     }, [user]);
 
     useEffect(() => {
-        if (!canManage && activeView === "management") {
+        if (!canManage && activeView !== "workload") {
             setActiveView("workload");
         }
     }, [canManage, activeView]);
@@ -89,10 +92,20 @@ export function App() {
         setWorkloadRefreshToken((prev) => prev + 1);
     }, [logout]);
 
-    const viewLabel = useMemo(
-        () => (activeView === "workload" ? "Workload assessment" : "Employee & project management"),
-        [activeView]
-    );
+    const viewLabel = useMemo(() => {
+        switch (activeView) {
+            case "workload":
+                return "Workload assessment";
+            case "capacity":
+                return "Capacity overview";
+            case "employees":
+                return "Employee management";
+            case "projects":
+                return "Project management";
+            default:
+                return "Workload assessment";
+        }
+    }, [activeView]);
 
     if (isLoading && !user) {
         return (
@@ -199,12 +212,32 @@ export function App() {
                                 <DropdownMenuItem
                                     className={cn(
                                         "flex items-center gap-2",
-                                        activeView === "management" && "bg-slate-800/70 text-white"
+                                        activeView === "capacity" && "bg-slate-800/70 text-white"
                                     )}
-                                    onSelect={() => setActiveView("management")}
+                                    onSelect={() => setActiveView("capacity")}
+                                >
+                                    <LineChart className="size-4" />
+                                    Capacity overview
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                    className={cn(
+                                        "flex items-center gap-2",
+                                        activeView === "employees" && "bg-slate-800/70 text-white"
+                                    )}
+                                    onSelect={() => setActiveView("employees")}
                                 >
                                     <Users className="size-4" />
-                                    Employee & project management
+                                    Employee management
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                    className={cn(
+                                        "flex items-center gap-2",
+                                        activeView === "projects" && "bg-slate-800/70 text-white"
+                                    )}
+                                    onSelect={() => setActiveView("projects")}
+                                >
+                                    <UserCog className="size-4" />
+                                    Project management
                                 </DropdownMenuItem>
                             </DropdownMenuContent>
                         </DropdownMenu>
@@ -240,15 +273,25 @@ export function App() {
             </header>
 
             <main>
-                {activeView === "workload" || !canManage ? (
+                {!canManage || activeView === "workload" ? (
                     <WorkloadView
                         refreshSignal={workloadRefreshToken}
                         currentUser={user}
                         isManager={canManage}
                     />
-                ) : (
-                    <ManagementView currentUser={user} onDataChange={handleDataChange} />
-                )}
+                ) : activeView === "capacity" ? (
+                    <CapacityOverviewView
+                        currentUser={user}
+                        refreshSignal={workloadRefreshToken}
+                    />
+                ) : activeView === "employees" ? (
+                    <EmployeeManagementView
+                        currentUser={user}
+                        onEmployeesChanged={handleDataChange}
+                    />
+                ) : activeView === "projects" ? (
+                    <ProjectManagementView onProjectsChanged={handleDataChange} />
+                ) : null}
             </main>
         </div>
     );
