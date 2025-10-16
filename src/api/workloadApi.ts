@@ -199,6 +199,25 @@ export const updateWorkloadSuggestions = async (
     };
 };
 
+export const deleteWorkloadProject = async (
+    userId: string,
+    projectId: string,
+    year: number
+): Promise<void> => {
+    const response = await fetch(
+        `/api/workloads/${encodeURIComponent(userId)}/${encodeURIComponent(projectId)}/${encodeURIComponent(String(year))}`,
+        {
+            method: "DELETE",
+        }
+    );
+
+    if (!response.ok && response.status !== 204) {
+        const message = await response.text();
+        const detail = message.trim().length > 0 ? message : response.statusText;
+        throw new Error(detail || "Removing project failed.");
+    }
+};
+
 export const fetchEmployees = async (): Promise<EmployeeSummary[]> => {
     const response = await fetch("/api/employees");
     const employees = await handleResponse<EmployeeSummary[]>(response, "Fetching employees");

@@ -1035,6 +1035,76 @@ const server = serve({
                     suggestions: responseSuggestions,
                 });
             },
+
+            async DELETE(req) {
+                const { employeeExternalId, projectExternalId, year } = req.params;
+                const session = await requireAuth(req, { requireManager: true });
+                if (session instanceof Response) return session;
+
+                const parsedYear = Number(year);
+                if (!Number.isFinite(parsedYear)) {
+                    return new Response("Invalid year", { status: 400 });
+                }
+
+                const employeeRows = await sql<{ id: number }[]>`
+                    SELECT id
+                    FROM employees
+                    WHERE external_id = ${employeeExternalId}
+                    LIMIT 1
+                `;
+
+                if (employeeRows.length === 0) {
+                    return new Response("Employee not found", { status: 404 });
+                }
+
+                const projectRows = await sql<{ id: number }[]>`
+                    SELECT id
+                    FROM projects
+                    WHERE external_id = ${projectExternalId}
+                    LIMIT 1
+                `;
+
+                if (projectRows.length === 0) {
+                    return new Response("Project not found", { status: 404 });
+                }
+
+                const employeeId = employeeRows[0]!.id;
+                const projectId = projectRows[0]!.id;
+
+                const workloadCount = await sql<{ total: number }[]>`
+                    SELECT COUNT(*)::int AS total
+                    FROM workloads
+                    WHERE employee_id = ${employeeId}
+                      AND project_id = ${projectId}
+                      AND year = ${parsedYear}
+                      AND hours > 0
+                `;
+
+                if ((workloadCount[0]?.total ?? 0) > 0) {
+                    return new Response(
+                        "Cannot remove project while workload points exist for this year.",
+                        { status: 409 }
+                    );
+                }
+
+                await sql.begin(async (tx) => {
+                    await tx`
+                        DELETE FROM workloads
+                        WHERE employee_id = ${employeeId}
+                          AND project_id = ${projectId}
+                          AND year = ${parsedYear}
+                    `;
+
+                    await tx`
+                        DELETE FROM workload_suggestions
+                        WHERE employee_id = ${employeeId}
+                          AND project_id = ${projectId}
+                          AND year = ${parsedYear}
+                    `;
+                });
+
+                return new Response(null, { status: 204 });
+            },
         },
 
         "/api/workloads/:employeeExternalId/:projectExternalId/:year/suggestions": {

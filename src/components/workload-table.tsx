@@ -14,6 +14,7 @@ import {
     fetchWorkload,
     updateWorkload,
     updateWorkloadSuggestions,
+    deleteWorkloadProject,
     type ProjectSummary,
     type ProjectStatus,
 } from "../api/workloadApi";
@@ -106,6 +107,7 @@ function WorkloadTable({
     const [projectFilter, setProjectFilter] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
+    const [removingProjectId, setRemovingProjectId] = useState<string | null>(null);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
     const handleYearStep = useCallback((delta: number) => {
@@ -338,6 +340,29 @@ function WorkloadTable({
             setSelectedProjectId(selectableProjects[0]?.id ?? "");
         }
     }, [selectableProjects, selectedProjectId]);
+
+    const handleRemoveProject = useCallback(
+        async (projectId: string) => {
+            if (!canEdit) return;
+            setErrorMessage(null);
+            setRemovingProjectId(projectId);
+            setIsSaving(true);
+            try {
+                await deleteWorkloadProject(userId, projectId, displayYear);
+                setProjectLanes((prev) => prev.filter((lane) => lane.id !== projectId));
+            } catch (error) {
+                const message =
+                    error instanceof Error && error.message.trim().length > 0
+                        ? error.message
+                        : "Failed to remove project. Please retry.";
+                setErrorMessage(message);
+            } finally {
+                setIsSaving(false);
+                setRemovingProjectId(null);
+            }
+        },
+        [canEdit, userId, displayYear]
+    );
 
     const handleAddProject = useCallback(async () => {
         if (!canEdit || !selectedProjectId) return;
@@ -572,11 +597,7 @@ function WorkloadTable({
                     </div>
                 ) : (
                     filteredProjectLanes.map((lane) => {
-                        const laneMode = canEdit
-                            ? "plan"
-                            : canSuggest
-                            ? "suggestion"
-                            : "view";
+                        const laneMode = canEdit ? "plan" : canSuggest ? "suggestion" : "view";
 
                         const primaryPoints =
                             laneMode === "plan"
@@ -631,6 +652,14 @@ function WorkloadTable({
                                 ? SUGGESTION_POINT_STROKE
                                 : PLAN_POINT_STROKE;
 
+                        const canRemoveProject =
+                            canEdit &&
+                            lane.points.every((point) => (point.hours ?? 0) === 0) &&
+                            lane.suggestions.every((point) => (point.hours ?? 0) === 0) &&
+                            !isLoading &&
+                            !isSaving;
+                        const isRemovingProject = removingProjectId === lane.id;
+
                         return (
                             <Lane
                                 key={lane.id}
@@ -638,6 +667,17 @@ function WorkloadTable({
                                     <div className="flex items-center gap-2">
                                         <span>{lane.name}</span>
                                         <ProjectStatusBadge status={lane.status} />
+                                        {canRemoveProject && (
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() => void handleRemoveProject(lane.id)}
+                                                disabled={isRemovingProject}
+                                                className="ml-2 border-red-500/60 text-red-200 hover:bg-red-500/10"
+                                            >
+                                                {isRemovingProject ? "Removing…" : "Remove"}
+                                            </Button>
+                                        )}
                                     </div>
                                 }
                                 points={primaryPoints}
