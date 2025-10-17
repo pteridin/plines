@@ -22,6 +22,7 @@ Stop the stack with `docker compose down`. Add `-v` if you also want to remove t
 - Fill in a production-grade `DATABASE_URL`, generate a long random `SECRET_KEY`, and choose strong admin credentials.
 - Docker Compose reads `.env` automatically and passes any `APP_*` values into the service containers; update them if you need to override the defaults.
 - When hosting in production, mount or inject the same variables as environment secrets instead of committing `.env`.
+- If you terminate TLS elsewhere and serve the app over plain HTTP, set `APP_SESSION_COOKIE_SECURE=false` so browsers will keep the login cookie.
 
 ## Development via Bun
 If you prefer running Bun directly:
@@ -35,3 +36,4 @@ The app will be available at `http://localhost:3000`.
 - This is a personal, vibe-coded project. It solves my problem right now, not every workload management problem ever.
 - Expect sharp edges: no promises about long-term support, security, or backwards compatibility.
 - Breaking changes may appear without notice. Use it entirely at your own risk.
+- Contributions are welcome, but I may not have time to review or merge them.

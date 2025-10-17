@@ -107,6 +107,29 @@ const SESSION_COOKIE_NAME = "session_token";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
 
+const parseBooleanEnv = (value: string | undefined, defaultValue: boolean): boolean => {
+    if (!value) return defaultValue;
+    switch (value.trim().toLowerCase()) {
+        case "1":
+        case "true":
+        case "yes":
+        case "on":
+            return true;
+        case "0":
+        case "false":
+        case "no":
+        case "off":
+            return false;
+        default:
+            return defaultValue;
+    }
+};
+
+const SESSION_COOKIE_SECURE = parseBooleanEnv(
+    process.env.SESSION_COOKIE_SECURE,
+    IS_PRODUCTION
+);
+
 type AuthenticatedEmployee = {
     id: number;
     externalId: string;
@@ -148,7 +171,7 @@ const serializeSessionCookie = (token: string) => {
         "HttpOnly",
         "SameSite=Strict",
     ];
-    if (IS_PRODUCTION) {
+    if (SESSION_COOKIE_SECURE) {
         parts.push("Secure");
     }
     return parts.join("; ");
@@ -156,7 +179,7 @@ const serializeSessionCookie = (token: string) => {
 
 const clearSessionCookie = () => {
     const parts = [`${SESSION_COOKIE_NAME}=`, "Path=/", "Max-Age=0", "HttpOnly", "SameSite=Strict"];
-    if (IS_PRODUCTION) {
+    if (SESSION_COOKIE_SECURE) {
         parts.push("Secure");
     }
     return parts.join("; ");

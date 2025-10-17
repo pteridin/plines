@@ -13,6 +13,7 @@ services:
       SECRET_KEY: ${APP_SECRET_KEY:-change_me}
       ADMIN_USERNAME: ${APP_ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${APP_ADMIN_PASSWORD:-admin123}
+      SESSION_COOKIE_SECURE: ${APP_SESSION_COOKIE_SECURE:-false}
     ports:
       - "3000:3000"
     restart: unless-stopped
