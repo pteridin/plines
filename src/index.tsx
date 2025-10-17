@@ -126,9 +126,22 @@ const parseBooleanEnv = (value: string | undefined, defaultValue: boolean): bool
 };
 
 const SESSION_COOKIE_SECURE = parseBooleanEnv(
-    process.env.SESSION_COOKIE_SECURE,
+    process.env.SESSION_COOKIE_SECURE ?? process.env.APP_SESSION_COOKIE_SECURE,
     IS_PRODUCTION
 );
+
+const parsePort = (value: string | undefined): number | null => {
+    if (!value) return null;
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 65535) {
+        return null;
+    }
+    return parsed;
+};
+
+const SERVER_PORT =
+    parsePort(process.env.PORT) ?? parsePort(process.env.APP_PORT) ?? 3000;
+const SERVER_HOSTNAME = process.env.APP_HOST ?? process.env.HOST ?? "0.0.0.0";
 
 type AuthenticatedEmployee = {
     id: number;
@@ -363,7 +376,10 @@ const ensureAdminUser = async () => {
 await sql_init();
 await ensureAdminUser();
 
+
 const server = serve({
+    hostname: SERVER_HOSTNAME,
+    port: SERVER_PORT,
     routes: {
         "/*": index,
 
